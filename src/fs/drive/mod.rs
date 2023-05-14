@@ -334,9 +334,14 @@ impl CommonFilesystem<DriveEntry> for DriveFilesystem {
         debug!("add_entry: (0) name:{:20?}; parent: {}", name, parent_ino);
         let ino = self.generate_ino(); // Generate a new inode number
         let now = std::time::SystemTime::now();
+        //TODO: write the actual creation and modification time, not just now
         let attr = FileAttr {
             ino: ino.into(),
             size: size,
+            /* TODO: set block size to something usefull.
+            maybe set it to 0 but when the file is cached set it to however big the
+            file in the cache is? that way it shows the actual size in blocks that are
+            used*/
             blocks: 0,
             atime: now,
             mtime: now,
@@ -348,6 +353,7 @@ impl CommonFilesystem<DriveEntry> for DriveFilesystem {
             uid: 0,
             gid: 0,
             rdev: 0,
+            /*TODO: set the actual block size?*/
             blksize: 4096,
             flags: 0,
         };
