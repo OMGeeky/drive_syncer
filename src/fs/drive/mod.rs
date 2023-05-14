@@ -152,10 +152,9 @@ impl DriveFilesystem {
     async fn add_dir_entry(
         &mut self,
         folder_path: &Path,
-        parent_ino: impl Into<Inode> + Send + 'async_recursion,
+        parent_ino: Inode,
         skip_self: bool,
     ) -> Result<()> {
-        let parent_ino: Inode = parent_ino.into();
         let ino;
         debug!(
             "add_dir_entry: {:?}; parent: {}; skip_self: {} ",
