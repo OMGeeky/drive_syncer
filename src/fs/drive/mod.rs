@@ -1,10 +1,12 @@
-use crate::common::LocalPath;
-use crate::fs::common::CommonFilesystem;
-use crate::fs::inode::Inode;
-use crate::fs::CommonEntry;
-use crate::google_drive::{DriveId, GoogleDrive};
-use crate::prelude::*;
-use crate::prelude::*;
+use crate::{
+    google_drive::{DriveId, GoogleDrive},
+    fs::CommonEntry,
+    fs::inode::Inode,
+    fs::common::CommonFilesystem,
+    common::LocalPath,
+    prelude::*,
+    async_helper::run_async_blocking,
+};
 use anyhow::{anyhow, Error};
 use async_recursion::async_recursion;
 use drive3::api::File;
@@ -16,20 +18,25 @@ use futures::TryFutureExt;
 use libc::c_int;
 use log::{debug, error, warn};
 use mime::Mime;
-use std::any::Any;
-use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
-use std::fmt::Display;
-use std::fs::OpenOptions;
-use std::os::unix::prelude::*;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    any::Any,
+    collections::HashMap,
+    ffi::{OsStr, OsString},
+    fmt::Display,
+    fs::OpenOptions,
+    os::unix::prelude::*,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tempfile::TempDir;
-use tokio::io::{stdin, AsyncBufReadExt};
-use tokio::runtime::Runtime;
-mod entry;
-use crate::async_helper::run_async_blocking;
+use tokio::{
+    io::{stdin, AsyncBufReadExt},
+    runtime::Runtime,
+};
+
 pub use entry::*;
+
+mod entry;
 
 #[derive(Debug)]
 pub struct DriveFilesystem {
@@ -54,6 +61,7 @@ pub struct DriveFilesystem {
     generation: u64,
 }
 
+// region general
 impl DriveFilesystem {
     pub async fn new(root: impl AsRef<Path>) -> Result<Self> {
         debug!("new: {:?};", root.as_ref());
@@ -265,6 +273,11 @@ impl DriveFilesystem {
     fn get_drive_id(&self, ino: impl Into<Inode>) -> Option<DriveId> {
         self.get_entry(ino).map(|e| e.drive_id.clone())
     }
+}
+// endregion
+
+// region caching
+impl DriveFilesystem {
     async fn download_file_to_cache(&self, ino: impl Into<Inode>) -> Result<PathBuf> {
         let ino = ino.into();
         debug!("download_file_to_cache: {}", ino);
@@ -300,6 +313,10 @@ impl DriveFilesystem {
         Ok(path)
     }
 }
+
+// endregion
+
+// region common
 #[async_trait::async_trait]
 impl CommonFilesystem<DriveEntry> for DriveFilesystem {
     fn get_entries(&self) -> &HashMap<Inode, DriveEntry> {
@@ -378,12 +395,20 @@ impl CommonFilesystem<DriveEntry> for DriveFilesystem {
     }
 }
 
+// endregion
+
+//region some convenience functions/implementations
 impl Display for DriveFilesystem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "DriveFilesystem at: '/{}'", self.root.display())
     }
 }
+
+//endregion
+
+//region filesystem
 impl Filesystem for DriveFilesystem {
+    //region init
     fn init(
         &mut self,
         _req: &Request<'_>,
@@ -398,11 +423,15 @@ impl Filesystem for DriveFilesystem {
         }
         Ok(())
     }
+    //endregion
+    //region destroy
     fn destroy(&mut self) {
         debug!("destroy");
         debug!("destroy: removing cache dir: {:?}", self.cache_dir);
         self.cache_dir = None;
     }
+    //endregion
+    //region lookup
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         debug!("lookup: {}:{:?}", parent, name);
         let parent = parent.into();
@@ -437,6 +466,8 @@ impl Filesystem for DriveFilesystem {
 
         reply.error(libc::ENOENT);
     }
+    //endregion
+    //region getattr
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
         debug!("getattr: {}", ino);
         let entry = self.entries.get(&ino.into());
@@ -446,7 +477,8 @@ impl Filesystem for DriveFilesystem {
             reply.error(libc::ENOENT);
         }
     }
-
+    //endregion
+    //region read
     fn read(
         &mut self,
         _req: &Request<'_>,
@@ -506,6 +538,8 @@ impl Filesystem for DriveFilesystem {
         debug!("read file: {:?} at {}", &path, offset);
         reply.data(&buf);
     }
+    //endregion
+    //region readdir
     fn readdir(
         &mut self,
         _req: &Request<'_>,
@@ -522,8 +556,7 @@ impl Filesystem for DriveFilesystem {
                 return;
             }
         }
-        if !(children.is_none()) {
-        } else {
+        if children.is_none() {
             reply.error(libc::ENOENT);
             return;
         }
@@ -535,7 +568,8 @@ impl Filesystem for DriveFilesystem {
             let path: PathBuf = entry.local_path.clone().into();
             let attr = entry.attr;
             let inode = (*child_inode).into();
-            offset += 1; // Increment the offset for each processed entry
+            // Increment the offset for each processed entry
+            offset += 1;
             debug!("entry: {}:{:?}; {:?}", inode, path, attr);
             if reply.add(inode, offset, attr.kind, &entry.name) {
                 // If the buffer is full, we need to stop
@@ -546,7 +580,11 @@ impl Filesystem for DriveFilesystem {
         debug!("readdir: ok");
         reply.ok();
     }
+    //endregion
+    //region access
     fn access(&mut self, _req: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
         reply.ok(); //TODO: implement this correctly
     }
+    //endregion
 }
+//endregion
