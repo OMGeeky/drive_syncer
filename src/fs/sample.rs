@@ -70,6 +70,7 @@ impl CommonEntry for SampleEntry {
         &self.attr
     }
 }
+
 #[derive(Debug, Default)]
 pub struct SampleFilesystem {
     /// the point where the filesystem is mounted
@@ -89,6 +90,7 @@ pub struct SampleFilesystem {
     /// when the filesystem is remounted
     generation: u64,
 }
+
 impl SampleFilesystem {
     pub fn new(root: impl AsRef<Path>, source: impl AsRef<Path>) -> Self {
         debug!("new: {:?}; {:?}", root.as_ref(), source.as_ref());
@@ -132,6 +134,7 @@ impl SampleFilesystem {
         }
     }
 }
+
 #[async_trait::async_trait]
 impl CommonFilesystem<SampleEntry> for SampleFilesystem {
     fn get_entries(&self) -> &HashMap<Inode, SampleEntry> {
@@ -185,6 +188,7 @@ impl CommonFilesystem<SampleEntry> for SampleFilesystem {
         Ok(ino)
     }
 }
+
 impl SampleFilesystem {
     async fn add_dir_entry(
         &mut self,
@@ -221,8 +225,7 @@ impl SampleFilesystem {
                         } else if metadata.is_file() {
                             let mode = metadata.mode();
                             let size = metadata.size();
-                            //TODO: async call
-                            // self.add_file_entry(ino, name.as_os_str(), mode as u16, size);
+                            self.add_file_entry(ino, name.as_os_str(), mode as u16, size).await;
                         }
                     }
                 }
@@ -242,9 +245,13 @@ impl fuser::Filesystem for SampleFilesystem {
         // self.add_file_entry(1, "hello.txt".as_ref(), 0o644);
         let source = self.source.clone();
 
+        debug!("init: add_dir_entry");
         run_async_blocking(async {
+            debug!("init: add_dir_entry (async)");
             self.add_dir_entry(&source, FUSE_ROOT_ID, true).await;
+            debug!("init: add_dir_entry done (async)");
         });
+        debug!("init: add_dir_entry done");
         // self.add_dir_entry(&source, FUSE_ROOT_ID, true);
         Ok(())
     }
@@ -286,8 +293,7 @@ impl fuser::Filesystem for SampleFilesystem {
                 return;
             }
         }
-        if !(children.is_none()) {
-        } else {
+        if !(children.is_none()) {} else {
             reply.error(libc::ENOENT);
             return;
         }
@@ -299,7 +305,8 @@ impl fuser::Filesystem for SampleFilesystem {
             let path: PathBuf = entry.local_path.clone().into();
             let attr = entry.attr;
             let inode = (*child_inode).into();
-            offset += 1; // Increment the offset for each processed entry
+            // Increment the offset for each processed entry
+            offset += 1;
             debug!("entry: {}:{:?}; {:?}", inode, path, attr);
             if !reply.add(inode, offset, attr.kind, path) {
                 break;

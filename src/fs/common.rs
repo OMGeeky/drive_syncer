@@ -114,6 +114,9 @@ pub trait CommonFilesystem<Entry: CommonEntry> {
     fn get_entry(&self, ino: impl Into<Inode>) -> Option<&Entry> {
         self.get_entries().get(&ino.into())
     }
+    fn get_entry_mut(&mut self, ino: impl Into<Inode>) -> Option<&mut Entry> {
+        self.get_entries_mut().get_mut(&ino.into())
+    }
     fn get_entry_r(&self, ino: impl Into<Inode>) -> Result<&Entry> {
         self.get_entries()
             .get(&ino.into())
