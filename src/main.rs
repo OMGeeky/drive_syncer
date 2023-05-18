@@ -1,5 +1,5 @@
-use tokio::io::AsyncReadExt;
-use tracing::instrument::WithSubscriber;
+// use tokio::io::AsyncReadExt;
+// use tracing::instrument::WithSubscriber;
 use tracing::span;
 
 #[tokio::main]
@@ -48,7 +48,7 @@ async fn sample_logging() {
     {
         let _x = s.enter();
         trace!("trace");
-        let mut string = [0u8; 1];
+        // let mut string = [0u8; 1];
         // info!("press any key to continue");
         // tokio::io::stdin().read(&mut string).await.expect("failed to read stdin");
         warn!("warn");
