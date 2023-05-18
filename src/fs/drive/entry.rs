@@ -12,9 +12,8 @@ pub struct DriveEntry {
     // pub drive_path: OsString,
     pub local_path: LocalPath,
     pub attr: FileAttr,
-    pub metadata_cache_time: Option<std::time::SystemTime>,
-    pub content_cache_time: Option<std::time::SystemTime>,
     pub drive_metadata: Option<drive3::api::File>,
+    pub has_upstream_content_changes: bool,
 }
 impl DriveEntry {
     pub fn new(
@@ -35,9 +34,8 @@ impl DriveEntry {
             // drive_path: path.clone().into(),
             local_path: path,
             attr,
-            metadata_cache_time: None,
-            content_cache_time: None,
             drive_metadata,
+            has_upstream_content_changes: true,
         }
     }
 }

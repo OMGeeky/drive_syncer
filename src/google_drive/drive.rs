@@ -8,7 +8,8 @@ use std::time::SystemTime;
 // use drive3::api::Scope::File;
 use anyhow::{anyhow, Context};
 use drive3::{hyper_rustls, oauth2};
-use drive3::api::{File, Scope};
+use drive3::api::{Change, File, Scope, StartPageToken};
+use drive3::chrono::{DateTime, Utc};
 use drive3::client::ReadSeek;
 use drive3::DriveHub;
 use drive3::hyper::{body, Body, Response};
@@ -21,7 +22,7 @@ use mime::{FromStrError, Mime};
 use tokio::{fs, io};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
-use tracing::{debug, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 use tracing::field::debug;
 
 use crate::google_drive::{drive, DriveId, helpers};
@@ -30,6 +31,52 @@ use crate::prelude::*;
 #[derive(Clone)]
 pub struct GoogleDrive {
     hub: DriveHub<HttpsConnector<HttpConnector>>,
+}
+
+impl GoogleDrive {
+    #[instrument]
+    pub(crate) async fn get_start_page_token(&self) -> anyhow::Result<StartPageToken> {
+        let (_response, start_page_token) = self.hub.changes().get_start_page_token().doit().await?;
+        Ok(start_page_token)
+    }
+}
+
+impl GoogleDrive {
+    #[instrument]
+    pub(crate) async fn get_changes_since(&self, start_page_token: &mut StartPageToken) -> anyhow::Result<Vec<Change>> {
+        let mut changes = vec![];
+        let mut page_token: Option<String> = None;
+        loop {
+            debug!("getting changes since {:?} page: {:?}", start_page_token, page_token);
+            let mut request = self
+                .hub
+                .changes()
+                .list(&start_page_token
+                    .start_page_token
+                    .as_ref()
+                    .context("no start_page_token")?);
+            if let Some(page_token) = &page_token {
+                request = request.page_token(page_token);
+            }
+            let (_response, change_list) = request
+                .doit()
+                .await
+                .context("could not get changes")?;
+            if let Some(change_list) = change_list.changes {
+                changes.extend(change_list);
+            }
+            if let Some(next_page_token) = change_list.next_page_token {
+                page_token = Some(next_page_token);
+            } else if let Some(new_start_page_token) = change_list.new_start_page_token {
+                start_page_token.start_page_token = Some(new_start_page_token);
+                break;
+            } else {
+                error!("no next_page_token or new_start_page_token");
+                break;
+            }
+        }
+        Ok(changes)
+    }
 }
 
 impl GoogleDrive {
@@ -67,7 +114,7 @@ impl GoogleDrive {
 
 impl GoogleDrive {
     #[instrument]
-    pub async fn download_file(&self, file_id: DriveId, target_file: &PathBuf) -> Result<()> {
+    pub async fn download_file(&self, file_id: DriveId, target_file: &PathBuf) -> Result<File> {
         debug!(
             "download_file: file_id: {:50?} to {}",
             file_id,
@@ -78,13 +125,13 @@ impl GoogleDrive {
             Err(e) => return Err(anyhow!("invalid file_id: {:?}", e).into()),
         };
 
-        let x = download_file_by_id(&self, file_id, target_file.as_path()).await;
+        let file = download_file_by_id(&self, file_id, target_file.as_path()).await;
         debug!("download_file: completed");
-        let x = x?;
+        let file = file?;
 
         debug!("download_file: success");
 
-        Ok(())
+        Ok(file)
     }
 }
 

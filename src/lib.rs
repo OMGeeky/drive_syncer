@@ -429,7 +429,7 @@ pub async fn sample_drive_fs() -> Result<()> {
 
     let cache_dir = get_cache_dir()?;
     let upload_ignore = CommonFileFilter::from_path(upload_ignore_path)?;
-    let sync_settings = SyncSettings::new(Duration::from_secs(2), Duration::from_secs(20));
+    let sync_settings = SyncSettings::new(Duration::from_secs(2), Duration::from_secs(5));
     // let source = "/tmp/fuse/2";
     let drive = GoogleDrive::new().await?;
     // let file_uploader = FileUploader::new("config/credentials.json", "config/token.json");
