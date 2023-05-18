@@ -6,9 +6,10 @@ use crate::prelude::*;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use fuser::{FileAttr, FileType, TimeOrNow, FUSE_ROOT_ID};
-use log::debug;
+use tracing::debug;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -145,7 +146,7 @@ pub trait CommonFilesystem<Entry: CommonEntry> {
         name: &OsStr,
         mode: u16,
         file_type: FileType,
-        parent_ino: impl Into<Inode> + Send,
+        parent_ino: impl Into<Inode> + Send+ Debug,
         size: u64,
     ) -> Result<Inode>;
 

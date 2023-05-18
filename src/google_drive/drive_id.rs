@@ -1,11 +1,17 @@
 use std::ffi::OsString;
-use std::fmt::Display;
+use std::fmt::{Display, Pointer};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DriveId(OsString);
 
 impl DriveId {
     pub(crate) fn root() -> DriveId {
         DriveId(OsString::from("root"))
+    }
+    pub fn as_str(&self) -> Option<&str> {
+        self.0.to_str()
+    }
+    pub fn into_string(self) -> Result<String, OsString> {
+        self.0.into_string()
     }
 }
 

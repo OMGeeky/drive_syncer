@@ -1,33 +1,48 @@
 #![allow(dead_code, unused)]
 
-use google_drive3::oauth2::read_application_secret;
-use std::error::Error;
-use std::time::{Duration, SystemTime};
-
 extern crate google_drive3 as drive3;
+
+use std::error::Error;
+use std::ffi::OsStr;
+use std::path::Path;
+use std::time::{Duration, SystemTime};
+use std::time::UNIX_EPOCH;
+
+use async_trait::async_trait;
+use drive3::{DriveHub, hyper, hyper_rustls, oauth2};
 use drive3::api::Channel;
-use drive3::{hyper, hyper_rustls, oauth2, DriveHub};
-use log::{debug, error, info, trace, warn};
+use fuser::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr, Request, Session, SessionUnmounter, TimeOrNow};
+use google_drive3::oauth2::read_application_secret;
 // use nix;
-use notify::{recommended_watcher, INotifyWatcher, RecommendedWatcher};
-use tokio::io::{stdin, AsyncReadExt};
-use tokio::sync::mpsc::channel;
+use notify::{INotifyWatcher, recommended_watcher, RecommendedWatcher};
+use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, stdin};
+use tokio::runtime::Runtime;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::{channel, Sender};
+use tokio::task::JoinHandle;
+use tracing::{debug, error, info, trace, warn};
+
+use prelude::*;
+
+use crate::config::common_file_filter::CommonFileFilter;
+use crate::fs::drive::{DriveFilesystem, DriveFileUploader, FileUploaderCommand, SyncSettings};
+use crate::fs::sample::SampleFilesystem;
+use crate::google_drive::GoogleDrive;
+
 pub mod async_helper;
 pub mod common;
 pub mod fs;
 pub mod google_drive;
 pub mod prelude;
-
-use prelude::*;
+pub mod config;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn init_logger() {
-        let _ = env_logger::builder()
-            .filter_level(log::LevelFilter::Trace)
-            .is_test(true)
-            .try_init();
+        todo!("init logger (tracing)")
     }
 
     #[tokio::test]
@@ -37,16 +52,11 @@ mod tests {
     }
 }
 
-pub fn init_logger() {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
-        .try_init();
-}
-
 pub async fn sample() -> Result<()> {
     //Test file id: "1IotISYu3cF7JrOdfFPKNOkgYg1-ii5Qs"
     list_files().await
 }
+
 async fn list_files() -> Result<()> {
     debug!("Hello, world!");
     let secret: oauth2::ApplicationSecret = read_application_secret("auth/client_secret.json")
@@ -56,9 +66,9 @@ async fn list_files() -> Result<()> {
         secret,
         oauth2::InstalledFlowReturnMethod::HTTPRedirect,
     )
-    .persist_tokens_to_disk("auth/token_store.json")
-    .build()
-    .await?;
+        .persist_tokens_to_disk("auth/token_store.json")
+        .build()
+        .await?;
 
     let hub = DriveHub::new(
         hyper::Client::builder().build(
@@ -93,13 +103,6 @@ async fn list_files() -> Result<()> {
     );
     Ok(())
 }
-use fuser::{
-    FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty,
-    ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr, Request, TimeOrNow, FUSE_ROOT_ID,
-};
-use std::ffi::OsStr;
-use std::path::Path;
-use std::time::UNIX_EPOCH;
 
 #[derive(Default)]
 struct MyFS {
@@ -117,16 +120,12 @@ struct MyFS {
     main_name: String,
 }
 
-use crate::fs::drive::DriveFilesystem;
-use crate::fs::sample::SampleFilesystem;
-use async_trait::async_trait;
-use tokio::runtime::Runtime;
-
 struct DirEntry {
     ino: u64,
     name: String,
     file_type: FileType,
 }
+
 impl MyFS {
     fn get_attr(&self, ino: u64) -> Option<FileAttr> {
         // Get the file attributes based on the inode number
@@ -264,6 +263,7 @@ impl MyFS {
         }
     }
 }
+
 #[async_trait]
 impl Filesystem for MyFS {
     fn open(&mut self, _req: &Request<'_>, _ino: u64, _flags: i32, reply: ReplyOpen) {
@@ -381,6 +381,7 @@ impl Filesystem for MyFS {
         }
     }
 }
+
 pub async fn watch_file_reading() -> Result<()> {
     let mountpoint = "/tmp/fuse/1";
     let options = vec![
@@ -402,11 +403,12 @@ pub async fn watch_file_reading() -> Result<()> {
         mountpoint,
         &options,
     )
-    .unwrap();
+        .unwrap();
     debug!("Exiting...");
 
     Ok(())
 }
+
 pub async fn sample_fs() -> Result<()> {
     let mountpoint = "/tmp/fuse/1";
     let source = "/tmp/fuse/2";
@@ -419,18 +421,92 @@ pub async fn sample_fs() -> Result<()> {
     debug!("Exiting...");
     Ok(())
 }
+
 pub async fn sample_drive_fs() -> Result<()> {
     let mountpoint = "/tmp/fuse/3";
+    let upload_ignore_path = Path::new("config/.upload_ignore");
+    let settings_path = Path::new("config/settings.json");
+
+    let cache_dir = get_cache_dir()?;
+    let upload_ignore = CommonFileFilter::from_path(upload_ignore_path)?;
+    let sync_settings = SyncSettings::new(Duration::from_secs(2), Duration::from_secs(20));
     // let source = "/tmp/fuse/2";
-    let options = vec![MountOption::RW];
+    let drive = GoogleDrive::new().await?;
+    // let file_uploader = FileUploader::new("config/credentials.json", "config/token.json");
+    let (file_uploader_sender, file_uploader_receiver) = mpsc::channel(1);
+    let mut file_uploader = DriveFileUploader::new(drive.clone(),
+                                                   upload_ignore,
+                                                   file_uploader_receiver,
+                                                   cache_dir.path().to_path_buf(),
+                                                   Duration::from_secs(3));
     debug!("Mounting fuse filesystem at {}", mountpoint);
-    let fs = DriveFilesystem::new(mountpoint).await?;
+    let fs = DriveFilesystem::new(mountpoint,
+                                  Path::new(""),
+                                  file_uploader_sender.clone(),
+                                  drive,
+                                  cache_dir.into_path(),
+                                  sync_settings,
+    ).await?;
 
-    fuser::mount2(fs, mountpoint, &options).unwrap();
+    // let session_unmounter =
+    let mount_options = vec![MountOption::RW];
 
-    debug!("Exiting...");
+    let uploader_handle: JoinHandle<()> = tokio::spawn(async move { file_uploader.listen().await; });
+    let end_signal_handle: JoinHandle<()> = mount(fs, &mountpoint, &mount_options, file_uploader_sender).await?;
+    tokio::try_join!(uploader_handle, end_signal_handle)?;
+
+    // tokio::spawn(async move {
+    // end_program_signal_awaiter(file_uploader_sender, session_unmounter).await?;
+    // });
+    // fuser::mount2(fs, &mountpoint, &options).unwrap();
+
+
+    debug!("Exiting gracefully...");
     Ok(())
 }
+
+fn get_cache_dir() -> Result<TempDir> {
+    let cache_dir = tempfile::tempdir()?;
+    debug!("cache_dir: {:?}", cache_dir.path());
+    if !cache_dir.path().exists() {
+        debug!("creating cache dir: {:?}", cache_dir.path());
+        std::fs::create_dir_all(cache_dir.path())?;
+    } else {
+        debug!("cache dir exists: {}", cache_dir.path().display());
+    }
+    Ok(cache_dir)
+}
+
+async fn mount(fs: DriveFilesystem,
+               mountpoint: &str,
+               options: &[MountOption],
+               sender: Sender<FileUploaderCommand>) -> Result<JoinHandle<()>> {
+    let mut session = Session::new(fs, mountpoint.as_ref(), options)?;
+    let session_ender = session.unmount_callable();
+    let end_program_signal_handle = tokio::spawn(async move {
+        end_program_signal_awaiter(sender, session_ender).await;
+    });
+    debug!("Mounting fuse filesystem" );
+    session.run();
+    debug!("Finished with mounting");
+    // Ok(session_ender)
+    Ok(end_program_signal_handle)
+}
+
+async fn end_program_signal_awaiter(file_uploader_sender: Sender<FileUploaderCommand>,
+                                    mut session_unmounter: SessionUnmounter) -> Result<()> {
+    tokio::signal::ctrl_c().await.expect("failed to listen for ctrl_c event");
+
+    info!("got signal to end program");
+    file_uploader_sender.send(FileUploaderCommand::Stop).await?;
+    info!("sent stop command to file uploader");
+    info!("unmounting...");
+    session_unmounter.unmount()?;
+    info!("unmounted");
+    Ok(())
+}
+
+/*
 // pub async fn watch_file_reading() -> Result<()> {
 //     let temp_file = tempfile::NamedTempFile::new()?;
 //     let file_path = temp_file.path();
@@ -474,3 +550,4 @@ pub async fn sample_drive_fs() -> Result<()> {
 //     info!("Done (nix)");
 //     Ok(())
 // }
+*/

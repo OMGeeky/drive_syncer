@@ -10,10 +10,10 @@ use fuser::{
     ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow, FUSE_ROOT_ID,
 };
 use libc::c_int;
-use log::{debug, warn};
+use tracing::{debug, warn};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::fs::OpenOptions;
 use std::os::unix::prelude::*;
 use std::path::{Path, PathBuf};
@@ -157,7 +157,7 @@ impl CommonFilesystem<SampleEntry> for SampleFilesystem {
         name: &OsStr,
         mode: u16,
         file_type: FileType,
-        parent_ino: impl Into<Inode> + Send,
+        parent_ino: impl Into<Inode> + Send+ Debug,
         size: u64,
     ) -> Result<Inode> {
         let parent_ino = parent_ino.into();

@@ -3,7 +3,7 @@ use crate::fs::{CommonEntry, Inode};
 use crate::google_drive::DriveId;
 use fuser::FileAttr;
 use std::ffi::{OsStr, OsString};
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct DriveEntry {
     pub ino: Inode,
     pub drive_id: DriveId,
@@ -12,6 +12,9 @@ pub struct DriveEntry {
     // pub drive_path: OsString,
     pub local_path: LocalPath,
     pub attr: FileAttr,
+    pub metadata_cache_time: Option<std::time::SystemTime>,
+    pub content_cache_time: Option<std::time::SystemTime>,
+    pub drive_metadata: Option<drive3::api::File>,
 }
 impl DriveEntry {
     pub fn new(
@@ -21,6 +24,7 @@ impl DriveEntry {
 
         local_path: impl Into<LocalPath>,
         attr: FileAttr,
+        drive_metadata: Option<drive3::api::File>,
     ) -> Self {
         let name = name.into();
         let path = local_path.into();
@@ -31,6 +35,9 @@ impl DriveEntry {
             // drive_path: path.clone().into(),
             local_path: path,
             attr,
+            metadata_cache_time: None,
+            content_cache_time: None,
+            drive_metadata,
         }
     }
 }
