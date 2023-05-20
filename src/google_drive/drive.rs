@@ -163,7 +163,7 @@ impl GoogleDrive {
         let path: OsString = path.into();
         let path = match path.into_string() {
             Ok(path) => path,
-            Err(_) => return Err("invalid path".into()),
+            Err(_) => return Err(anyhow!("invalid path")),
         };
         let parent_drive_id: OsString = match parent_drive_id {
             Some(parent_drive_id) => parent_drive_id,
@@ -172,7 +172,7 @@ impl GoogleDrive {
             .into();
         let parent_drive_id = match parent_drive_id.into_string() {
             Ok(parent_drive_id) => parent_drive_id,
-            Err(_) => return Err("invalid parent_drive_id".into()),
+            Err(_) => return Err(anyhow!("invalid parent_drive_id")),
         };
         debug!("get_id: path: {}", path);
         debug!("get_id: parent_drive_id: {}", parent_drive_id);
@@ -193,22 +193,22 @@ impl GoogleDrive {
             Ok((response, files)) => (response, files),
             Err(e) => {
                 warn!("get_id: Error: {}", e);
-                return Err("Error".into());
+                return Err(anyhow!("Error"));
             }
         };
 
         if files.files.is_none() {
             warn!("get_id: No files found (0)");
-            return Err("No files found".into());
+            return Err(anyhow!("No files found"));
         }
         let files = files.files.unwrap();
         if files.len() == 0 {
             warn!("get_id: No files found (1)");
-            return Err("No files found".into());
+            return Err(anyhow!("No files found"));
         }
         if files.len() > 1 {
             warn!("get_id: Multiple files found");
-            return Err("Multiple files found".into());
+            return Err(anyhow!("Multiple files found"));
         }
         let file = files.into_iter().next().unwrap();
         let id = file.id.unwrap();
@@ -305,14 +305,14 @@ pub async fn sample() -> Result<()> {
     let hello_world_file = get_files_by_name(&mut drive, "hello_world.txt").await?;
     let hello_world_file = hello_world_file
         .first()
-        .ok_or("hello_world.txt not found")?;
+        .ok_or(anyhow!("hello_world.txt not found"))?;
     debug!("hello_world_file: id:{:?}", hello_world_file.id);
     let target_path = "/tmp/hello_world.txt";
     let target_path = std::path::Path::new(target_path);
     // download_file(&mut drive, hello_world_file, target_path).await?;
     debug!("target_path: {:?}", target_path);
     debug!("download_file_by_id");
-    let hello_world_file_id = hello_world_file.id.as_ref().ok_or("")?;
+    let hello_world_file_id = hello_world_file.id.as_ref().ok_or(anyhow!(""))?;
     download_file_by_id(&mut drive, hello_world_file_id, target_path).await?;
     debug!("get_file_header_by_id");
     get_file_header_by_id(&mut drive, hello_world_file_id).await?;
@@ -384,10 +384,10 @@ async fn get_files_by_name(
 ) -> Result<Vec<drive3::api::File>> {
     let name = name.into();
     if name.is_empty() {
-        return Err("name cannot be empty".into());
+        return Err(anyhow!("name cannot be empty"));
     }
     if name.contains("'") {
-        return Err("name cannot contain single quote".into());
+        return Err(anyhow!("name cannot contain single quote"));
     }
     let (response, files) = drive
         .hub

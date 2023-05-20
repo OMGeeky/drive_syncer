@@ -1,3 +1,3 @@
-use std::error::Error;
+pub use anyhow::Result;
 
-pub type Result<T> = core::result::Result<T, Box<dyn Error>>;
+pub use drive3::api::File as DriveFileMetadata;
