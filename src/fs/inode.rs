@@ -24,12 +24,6 @@ impl Into<u64> for Inode {
     }
 }
 
-// impl Into<Inode> for Inode{
-//     fn into(self) -> Inode {
-//         self
-//     }
-// }
-
 impl TryInto<u32> for Inode {
     type Error = std::num::TryFromIntError;
 
@@ -43,6 +37,7 @@ impl From<u64> for Inode {
         Inode(value)
     }
 }
+
 impl From<u32> for Inode {
     fn from(value: u32) -> Inode {
         Inode(value as u64)

@@ -28,6 +28,7 @@ impl From<OsString> for LocalPath {
         Self::from(&path)
     }
 }
+
 impl From<&OsString> for LocalPath {
     fn from(path: &OsString) -> Self {
         Path::new(path).into()
@@ -35,14 +36,15 @@ impl From<&OsString> for LocalPath {
 }
 
 impl<T> AsRef<T> for LocalPath
-where
-    T: ?Sized,
-    <PathBuf as Deref>::Target: AsRef<T>,
+    where
+        T: ?Sized,
+        <PathBuf as Deref>::Target: AsRef<T>,
 {
     fn as_ref(&self) -> &T {
         self.0.deref().as_ref()
     }
 }
+
 impl Deref for LocalPath {
     type Target = PathBuf;
 
@@ -57,11 +59,13 @@ impl Into<PathBuf> for LocalPath {
         self.0
     }
 }
+
 impl Into<OsString> for LocalPath {
     fn into(self) -> OsString {
         self.0.into_os_string()
     }
 }
+
 impl<'a> Into<&'a Path> for &'a LocalPath {
     fn into(self) -> &'a Path {
         &self.0

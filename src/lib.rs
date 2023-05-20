@@ -4,26 +4,22 @@ extern crate google_drive3 as drive3;
 
 
 use std::path::Path;
-use std::time::{Duration};
+use std::time::Duration;
 
-
-
-
-use fuser::{Session, SessionUnmounter,MountOption};
+use fuser::{MountOption, Session, SessionUnmounter};
 // use nix;
 use tempfile::TempDir;
 // use tokio::io::{AsyncReadExt, stdin};
 // use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::{ Sender};
+use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
-use tracing::{debug,  info};
+use tracing::{debug, info};
 
 use prelude::*;
 
 use crate::config::common_file_filter::CommonFileFilter;
 use crate::fs::drive::{DriveFilesystem, DriveFileUploader, FileUploaderCommand, SyncSettings};
-use crate::fs::sample::SampleFilesystem;
 use crate::google_drive::GoogleDrive;
 
 pub mod async_helper;
@@ -32,19 +28,6 @@ pub mod fs;
 pub mod google_drive;
 pub mod prelude;
 pub mod config;
-
-pub async fn sample_fs() -> Result<()> {
-    let mountpoint = "/tmp/fuse/1";
-    let source = "/tmp/fuse/2";
-    let options = vec![MountOption::RW];
-    debug!("Mounting fuse filesystem at {}", mountpoint);
-    let fs = SampleFilesystem::new(mountpoint, source);
-
-    fuser::mount2(fs, mountpoint, &options).unwrap();
-
-    debug!("Exiting...");
-    Ok(())
-}
 
 pub async fn sample_drive_fs() -> Result<()> {
     let mountpoint = "/tmp/fuse/3";
@@ -61,29 +44,21 @@ pub async fn sample_drive_fs() -> Result<()> {
     let mut file_uploader = DriveFileUploader::new(drive.clone(),
                                                    upload_ignore,
                                                    file_uploader_receiver,
-                                                   cache_dir.path().to_path_buf(),
                                                    Duration::from_secs(3));
     debug!("Mounting fuse filesystem at {}", mountpoint);
-    let fs = DriveFilesystem::new(mountpoint,
-                                  Path::new(""),
-                                  file_uploader_sender.clone(),
-                                  drive,
-                                  cache_dir.into_path(),
-                                  sync_settings,
+    let fs = DriveFilesystem::new(
+        Path::new(""),
+        file_uploader_sender.clone(),
+        drive,
+        cache_dir.into_path(),
+        sync_settings,
     ).await?;
 
-    // let session_unmounter =
     let mount_options = vec![MountOption::RW];
 
     let uploader_handle: JoinHandle<()> = tokio::spawn(async move { file_uploader.listen().await; });
     let end_signal_handle: JoinHandle<()> = mount(fs, &mountpoint, &mount_options, file_uploader_sender).await?;
     tokio::try_join!(uploader_handle, end_signal_handle)?;
-
-    // tokio::spawn(async move {
-    // end_program_signal_awaiter(file_uploader_sender, session_unmounter).await?;
-    // });
-    // fuser::mount2(fs, &mountpoint, &options).unwrap();
-
 
     debug!("Exiting gracefully...");
     Ok(())
@@ -129,49 +104,3 @@ async fn end_program_signal_awaiter(file_uploader_sender: Sender<FileUploaderCom
     info!("unmounted");
     Ok(())
 }
-
-/*
-// pub async fn watch_file_reading() -> Result<()> {
-//     let temp_file = tempfile::NamedTempFile::new()?;
-//     let file_path = temp_file.path();
-//     info!("File path: {:?}", file_path);
-//     use notify::{recommended_watcher, RecursiveMode, Watcher};
-//     let mut config = notify::Config::default();
-//     let mut watcher: INotifyWatcher = Watcher::new(MyReadHandler, config).unwrap();
-//     watcher
-//         .watch(file_path, RecursiveMode::NonRecursive)
-//         .unwrap();
-//
-//     info!("Press any key to exit...");
-//     let x = &mut [0u8; 1];
-//     stdin().read(x).await?;
-//     debug!("Done");
-//     Ok(())
-// }
-// struct MyReadHandler;
-// impl notify::EventHandler for MyReadHandler {
-//     fn handle_event(&mut self, event: std::result::Result<notify::Event, notify::Error>) {
-//         debug!("File read: {:?}", event);
-//     }
-// }
-//
-// pub async fn sample_nix() -> Result<()> {
-//     info!("Hello, world! (nix)");
-//     let tmppath = tempfile::tempdir()?;
-//     nix::mount::mount(
-//         // Some("/home/omgeeky/Documents/testmount/"),
-//         None::<&str>,
-//         tmppath.path(),
-//         Some("tmpfs"),
-//         nix::mount::MsFlags::empty(),
-//         None::<&str>,
-//     );
-//     info!("Mounted tmpfs at {:?}", tmppath.path());
-//     info!("Press any key to exit (nix)...");
-//     // block execution until keyboard input is received
-//     nix::unistd::read(0, &mut [0])?;
-//     nix::mount::umount(tmppath.path()).unwrap();
-//     info!("Done (nix)");
-//     Ok(())
-// }
-*/

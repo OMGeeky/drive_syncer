@@ -1,31 +1,21 @@
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Debug, Display, Error};
+use std::fmt::{Debug, Display};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::time::SystemTime;
 
 // use drive3::api::Scope::File;
 use anyhow::{anyhow, Context};
 use drive3::{hyper_rustls, oauth2};
 use drive3::api::{Change, File, Scope, StartPageToken};
-use drive3::chrono::{DateTime, Utc};
-use drive3::client::ReadSeek;
 use drive3::DriveHub;
-use drive3::hyper::{body, Body, Response};
-use drive3::hyper::body::HttpBody;
+use drive3::hyper::{Body, Response};
 use drive3::hyper::client::HttpConnector;
 use drive3::hyper_rustls::HttpsConnector;
-use futures::{Stream, StreamExt};
 use hyper::Client;
-use mime::{FromStrError, Mime};
-use tokio::{fs, io};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::runtime::Runtime;
+use tokio::fs;
 use tracing::{debug, error, instrument, trace, warn};
-use tracing::field::debug;
 
-use crate::google_drive::{drive, DriveId, helpers};
+use crate::google_drive::{DriveId, helpers};
 use crate::prelude::*;
 
 const FIELDS_FILE: &str = "id, name, size, mimeType, kind, md5Checksum, parents,trashed,  createdTime, modifiedTime, viewedByMeTime";
@@ -54,7 +44,7 @@ impl GoogleDrive {
             if let Some(page_token) = page_token {
                 request = request.page_token(&page_token);
             }
-            let (response, result) = request
+            let (_response, result) = request
                 .doit()
                 .await?;
             let result_files = result.files.ok_or(anyhow!("no file list returned"))?;
@@ -67,47 +57,6 @@ impl GoogleDrive {
         }
         Ok(files)
     }
-    // 
-    // #[instrument]
-    // pub async fn list_files(&self, folder_id: DriveId) -> anyhow::Result<Vec<File>> {
-    //     debug!("list_files: folder_id: {:?}", folder_id);
-    //     let folder_id: OsString = folder_id.into();
-    //     let folder_id = match folder_id.into_string() {
-    //         Ok(folder_id) => folder_id,
-    //         Err(_) => return Err(anyhow!("invalid folder_id")),
-    //     };
-    //     if folder_id.is_empty() {
-    //         return Err(anyhow!("folder_id is empty"));
-    //     }
-    //     if folder_id.contains('\'') {
-    //         return Err(anyhow!("folder_id contains invalid character"));
-    //     }
-    //     let mut files = Vec::new();
-    //     let mut page_token = None;
-    //     loop {
-    //         debug!("list_files: page_token: {:?}", page_token);
-    //         let (response, result) = self
-    //             .hub
-    //             .files()
-    //             .list()
-    //             .param(
-    //                 "fields",
-    //                 &format!("nextPageToken, files({})", FIELDS_FILE),
-    //             )
-    //             // .page_token(page_token.as_ref().map(String::as_str))
-    //             .q(format!("'{}' in parents", folder_id).as_str())
-    //             .doit()
-    //             .await?;
-    //         let result_files = result.files.ok_or(anyhow!("no file list returned"))?;
-    //         debug!("list_files: response: {:?}", result_files.len());
-    //         files.extend(result_files);
-    //         page_token = result.next_page_token;
-    //         if page_token.is_none() {
-    //             break;
-    //         }
-    //     }
-    //     Ok(files)
-    // }
 }
 
 impl GoogleDrive {
@@ -168,7 +117,7 @@ impl GoogleDrive {
     #[instrument]
     pub(crate) async fn get_metadata_for_file(&self, drive_id: DriveId) -> anyhow::Result<File> {
         let drive_id = drive_id.to_string();
-        let (response, file) = self
+        let (_response, file) = self
             .hub
             .files()
             .get(&drive_id)
@@ -184,16 +133,6 @@ impl GoogleDrive {
     pub async fn upload_file_content_from_path(&self, file: File, path: &Path) -> anyhow::Result<()> {
         update_file_content_on_drive_from_path(&self, file, path).await?;
         Ok(())
-    }
-}
-
-impl GoogleDrive {
-    pub(crate) async fn get_modified_time(&self, drive_id: DriveId) -> Result<SystemTime> {
-        let drive_id: OsString = drive_id.into();
-        let drive_id = drive_id.into_string().map_err(|_| anyhow!("invalid drive_id"))?;
-        let (response, file) = self.hub.files().get(&drive_id).param("fields", "modifiedTime").doit().await?;
-        let x = file.modified_time.ok_or_else(|| anyhow!("modified_time not found"))?;
-        Ok(x.into())
     }
 }
 
@@ -250,7 +189,7 @@ impl GoogleDrive {
             .param("fields", "files(id)")
             .doit()
             .await;
-        let (response, files) = match req {
+        let (_response, files) = match req {
             Ok((response, files)) => (response, files),
             Err(e) => {
                 warn!("get_id: Error: {}", e);
@@ -300,7 +239,7 @@ impl GoogleDrive {
         );
         let hub = DriveHub::new(http_client, auth);
 
-        let mut drive = GoogleDrive { hub };
+        let drive = GoogleDrive { hub };
         Ok(drive)
     }
     #[instrument]
@@ -321,7 +260,7 @@ impl GoogleDrive {
         let mut page_token = None;
         loop {
             debug!("list_files: page_token: {:?}", page_token);
-            let (response, result) = self
+            let (_response, result) = self
                 .hub
                 .files()
                 .list()
@@ -381,25 +320,11 @@ pub async fn sample() -> Result<()> {
     Ok(())
 }
 
-async fn download_file(
-    hub: &GoogleDrive,
-    file: &drive3::api::File,
-    target_path: &Path,
-) -> Result<File> {
-    if let Some(id) = &file.id {
-        download_file_by_id(hub, id, target_path).await
-    } else {
-        Err("file id not found".into())
-    }
-}
-
 async fn download_file_by_id(
     hub: &GoogleDrive,
     id: impl Into<String>,
     target_path: &Path,
 ) -> Result<File> {
-    use tokio::fs::File;
-    use tokio::io::AsyncWriteExt;
     let id = id.into();
     let (response, content): (Response<Body>, google_drive3::api::File) = hub
         .hub
@@ -434,7 +359,7 @@ async fn write_body_to_file(response: Response<Body>, target_path: &Path) -> Res
     let mut file = std::fs::File::create(target_path)?;
 
     let mut stream = response.into_body();
-    let mut buffer = bytes::BytesMut::new();
+    let _buffer = bytes::BytesMut::new();
     let mut counter = 0;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
@@ -448,7 +373,7 @@ async fn write_body_to_file(response: Response<Body>, target_path: &Path) -> Res
 
 async fn get_file_header_by_id(hub: &GoogleDrive, id: &str) -> Result<File> {
     debug!("get_file_header_by_id(): id: {:?}", id);
-    let (response, content) = hub.hub.files().get(id).doit().await?;
+    let (_response, content) = hub.hub.files().get(id).doit().await?;
 
     Ok(content)
 }
@@ -505,7 +430,7 @@ async fn sample_list_files(drive: &GoogleDrive) -> Result<()> {
     Ok(())
 }
 
-async fn create_file_on_drive_from_path(
+pub async fn create_file_on_drive_from_path(
     drive: &GoogleDrive,
     file: File,
     path: &Path,
@@ -516,7 +441,7 @@ async fn create_file_on_drive_from_path(
     Ok(())
 }
 
-async fn create_file_on_drive(
+pub async fn create_file_on_drive(
     drive: &GoogleDrive,
     file: google_drive3::api::File,
     mime_type: mime::Mime,
@@ -557,11 +482,10 @@ pub async fn update_file_content_on_drive_from_path(
 #[instrument(skip(file, content))]
 async fn update_file_content_on_drive(
     drive: &GoogleDrive,
-    file: google_drive3::api::File,
+    file: File,
     content: fs::File,
 ) -> anyhow::Result<()> {
     let stream = content.into_std().await;
-    // let stream = content;
     let mime_type = helpers::get_mime_from_file_metadata(&file)?;
     let id = file.drive_id.clone().with_context(|| "file metadata has no drive id")?;
     debug!("starting upload");

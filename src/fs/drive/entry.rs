@@ -1,10 +1,12 @@
-use crate::common::LocalPath;
-use crate::fs::{CommonEntry, Inode};
-use crate::google_drive::DriveId;
-use fuser::FileAttr;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+use fuser::FileAttr;
 use tracing::instrument;
+
+use crate::common::LocalPath;
+use crate::fs::Inode;
+use crate::google_drive::DriveId;
 
 #[derive(Debug, Clone)]
 pub struct DriveEntry {
@@ -50,15 +52,15 @@ impl DriveEntry {
             attr,
             drive_metadata,
             has_upstream_content_changes: true,
-            md5_checksum:None,
-            local_md5_checksum:None,
+            md5_checksum: None,
+            local_md5_checksum: None,
         }
     }
-    pub fn build_local_path(&mut self, parent: Option<LocalPath>){
+    pub fn build_local_path(&mut self, parent: Option<LocalPath>) {
         if let Some(parent_path) = parent {
             let path = parent_path.join(&self.name);
             self.local_path = Some(LocalPath::from(path));
-        }else{
+        } else {
             self.local_path = Some(LocalPath::from(PathBuf::from("")));
         }
     }

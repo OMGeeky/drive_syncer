@@ -1,20 +1,16 @@
 use std::{
-    any::Any,
     collections::HashMap,
     ffi::{OsStr, OsString},
     fmt::Display,
     fs::OpenOptions,
     os::unix::prelude::*,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use std::fmt::{Debug, Formatter};
-use std::future::Future;
 use std::io::{Seek, SeekFrom, stdout, Write};
-use std::ops::Deref;
 
-use anyhow::{anyhow, Context, Error};
-use async_recursion::async_recursion;
+use anyhow::{anyhow, Context};
 use bimap::BiMap;
 use drive3::api::{File, StartPageToken};
 use fuser::{
@@ -28,36 +24,16 @@ use fuser::{
     ReplyDirectory,
     ReplyEmpty,
     ReplyEntry,
-    ReplyIoctl,
-    ReplyLock,
-    ReplyLseek,
-    ReplyOpen,
-    ReplyStatfs,
     ReplyWrite,
-    ReplyXattr,
     Request,
     TimeOrNow,
 };
-use futures::TryFutureExt;
-use libc::{c_int, clone};
-use md5::digest::typenum::private::Trim;
-use mime::Mime;
-use tempfile::TempDir;
-use tokio::{
-    io::{AsyncBufReadExt, stdin},
-    runtime::Runtime,
-};
+use libc::c_int;
 use tracing::{debug, error, instrument, warn};
 use tracing::field::debug;
 
-use crate::{async_helper::run_async_blocking, common::LocalPath, config::common_file_filter::CommonFileFilter, fs::common::CommonFilesystem, fs::CommonEntry, fs::drive::DriveEntry, fs::inode::Inode, google_drive::{DriveId, GoogleDrive}, google_drive, prelude::*};
+use crate::{async_helper::run_async_blocking, common::LocalPath, fs::drive::DriveEntry, fs::inode::Inode, google_drive::{DriveId, GoogleDrive}, prelude::*};
 use crate::fs::drive::{Change, ChangeType, FileCommand, FileUploaderCommand, SyncSettings};
-
-enum CacheState {
-    Missing,
-    UpToDate,
-    RefreshNeeded,
-}
 
 #[derive(Debug)]
 enum ChecksumMatch {
@@ -87,8 +63,6 @@ enum ChecksumMatch {
 
 #[derive(Debug)]
 pub struct DriveFilesystem {
-    /// the point where the filesystem is mounted
-    root: PathBuf,
     /// the source dir to read from and write to
     source: GoogleDrive,
     /// the cache dir to store the files in
@@ -177,14 +151,12 @@ impl DriveFilesystem {
 // region general
 impl DriveFilesystem {
     #[instrument(skip(file_uploader_sender))]
-    pub async fn new(root: impl AsRef<Path> + Debug,
-                     config_path: impl AsRef<Path> + Debug,
+    pub async fn new(config_path: impl AsRef<Path> + Debug,
                      file_uploader_sender: tokio::sync::mpsc::Sender<FileUploaderCommand>,
                      drive: GoogleDrive, cache_dir: PathBuf,
                      settings: SyncSettings) -> Result<DriveFilesystem> {
-        let root = root.as_ref();
         let config_path = config_path.as_ref();
-        debug!("DriveFilesystem::new(root:{}; config_path: {})", root.display(), config_path.display());
+        debug!("DriveFilesystem::new(config_path: {})", config_path.display());
         // let upload_filter = CommonFileFilter::from_path(config_path)?;
         let mut entries = HashMap::new();
         Self::add_root_entry(&mut entries);
@@ -192,7 +164,6 @@ impl DriveFilesystem {
         let changes_start_token = drive.get_start_page_token().await?;
 
         let mut s = Self {
-            root: root.to_path_buf(),
             source: drive,
             cache_dir: Some(cache_dir),
             entries,
@@ -206,11 +177,6 @@ impl DriveFilesystem {
             ino_drive_id: BiMap::new(),
         };
         s.ino_drive_id.insert(FUSE_ROOT_ID.into(), DriveId::root());
-        //
-        // let root = s.root.to_path_buf();
-        // s.add_dir_entry(&root, Inode::from(FUSE_ROOT_ID), true)
-        //     .await;
-
         Ok(s)
     }
 
@@ -256,7 +222,7 @@ impl DriveFilesystem {
             cache_dir.display()
         );
         let entry = self
-            .get_entry(&inode)
+            .entries.get(&inode)
             .ok_or(anyhow!("could not get entry"))?;
         debug!(
             "get_cache_dir_for_file: entry local_path: {:?}",
@@ -269,7 +235,7 @@ impl DriveFilesystem {
 
     #[instrument]
     fn construct_cache_folder_path(cache_dir: &Path, entry: &DriveEntry) -> PathBuf {
-        let mut path = cache_dir.to_path_buf();
+        let path = cache_dir.to_path_buf();
         path.join(match entry.local_path.as_ref() {
             Some(x) => match x.parent() {
                 Some(parent) => parent.to_path_buf(),
@@ -277,14 +243,6 @@ impl DriveFilesystem {
             },
             None => PathBuf::new()
         })
-        // let folder_path = match entry.local_path.parent() {
-        //     Some(p) => p.as_os_str(),
-        //     None => OsStr::new(""),
-        // };
-        // debug!("construct_cache_folder_path: folder_path: {:?}", folder_path);
-        // let path = cache_dir.join(folder_path);
-        // debug!("construct_cache_folder_path: {}", path.display());
-        // path
     }
     #[instrument(fields(% self))]
     async fn add_all_file_entries(&mut self) -> anyhow::Result<()> {
@@ -337,10 +295,6 @@ impl DriveFilesystem {
         debug!("build all local paths");
         self.get_entry_mut(&DriveId::root()).expect("The root entry has to exist by now").build_local_path(None);
         self.build_path_for_children(&DriveId::root());
-
-        // for (drive_id, child_id) in self.children.iter(){
-        //     self.entries.get_mut()
-        // }
         Ok(())
     }
     #[instrument(skip(self))]
@@ -374,7 +328,7 @@ impl DriveFilesystem {
             existing_child_list.push(drive_id);
         } else {
             debug!("add_child: adding child: {:?} to parent: {:?} (new)", drive_id, parent);
-            let mut set = vec![drive_id];
+            let set = vec![drive_id];
             self.children.insert(parent.clone(), set);
         }
     }
@@ -429,7 +383,7 @@ impl DriveFilesystem {
             | "application/vnd.google-apps.presentation"
             | "application/vnd.google-apps.drive-sdk"
             | "application/vnd.google-apps.script"
-            //TODO: add all relevant mime types
+            //TODO: add all relevant mime types or match only the start or something
             => return Err(anyhow!("google app files are not supported (docs, sheets, etc)")),
             "application/vnd.google-apps.folder" => FileType::Directory,
             _ => FileType::RegularFile,
@@ -461,7 +415,7 @@ impl DriveFilesystem {
         Ok(entry)
     }
     #[instrument(fields(% self))]
-    fn get_file_permissions(&self, drive_id: &DriveId, file_kind: &FileType) -> u16 {
+    fn get_file_permissions(&self, _drive_id: &DriveId, file_kind: &FileType) -> u16 {
         //TODO: actually get the permissions from a default or some config for each file etc, not just these hardcoded ones
         if file_kind == &FileType::Directory {
             return 0o755;
@@ -494,13 +448,6 @@ impl DriveFilesystem {
         Ok(cache_path)
     }
 
-    fn check_if_file_is_cached(&self, drive_id: impl Into<DriveId> + Debug) -> Result<bool> {
-        let drive_id = drive_id.into();
-        let entry = self.get_entry_r(&drive_id)?;
-        let path = self.get_cache_path_for_entry(&entry)?;
-        let exists = path.exists();
-        Ok(exists)
-    }
     #[instrument(fields(% self))]
     async fn update_entry_metadata_cache_if_needed(&mut self) -> Result<Vec<DriveId>> {
         debug!("getting changes...");
@@ -549,20 +496,6 @@ impl DriveFilesystem {
         Ok(updated_entries)
     }
 
-    fn find_entry_by_drive_id(&self, drive_id: impl Into<String>) -> Option<Inode> {
-        let drive_id = drive_id.into();
-        let mut searched_entry = None;
-        for (ino, entry) in self.entries.iter() {
-            let entry_drive_id = entry.drive_id.as_str();
-            if entry_drive_id == drive_id {
-                debug!("updating entry: {}", ino);
-                searched_entry = Some(entry.ino);
-                break;
-            }
-        }
-        searched_entry
-    }
-
     /// Updates the entry from the drive if needed
     ///
     /// returns true if the entry's metadata was updated from the drive
@@ -587,23 +520,6 @@ impl DriveFilesystem {
         Ok(metadata_updated)
     }
 
-    fn get_cache_state(&self, cache_time: &Option<SystemTime>) -> CacheState {
-        let refresh_cache: CacheState = match cache_time {
-            Some(cache_time) => {
-                let now = SystemTime::now();
-                let duration = now.duration_since(*cache_time).unwrap();
-                // let seconds = duration.as_secs();
-                if duration > self.settings.cache_time() {
-                    CacheState::RefreshNeeded
-                } else {
-                    CacheState::UpToDate
-                }
-            }
-            None => CacheState::Missing,
-        };
-        refresh_cache
-    }
-
     fn get_cache_path_for_entry(&self, entry: &DriveEntry) -> Result<PathBuf> {
         debug!("get_cache_path_for_entry: {}", entry.ino);
         let cache_folder = match self.cache_dir.as_ref() {
@@ -623,22 +539,13 @@ impl DriveFilesystem {
         );
         path
     }
-    async fn get_modified_time_on_remote(&self, ino: DriveId) -> Result<SystemTime> {
-        let entry = self.get_entry_r(&ino)?;
-        let drive_id = entry.drive_id.clone();
-        let drive = &self.source;
-        let modified_time = drive.get_modified_time(drive_id).await?;
-        Ok(modified_time)
-    }
-    fn set_entry_size(&mut self, ino: DriveId, size: u64) -> anyhow::Result<()> {
-        self.get_entry_mut(ino).context("no entry for ino")?.attr.size = size;
-        Ok(())
-    }
-    fn set_entry_metadata_with_ino(&mut self, ino: impl Into<DriveId>, drive_metadata: google_drive3::api::File) -> anyhow::Result<()> {
+
+    fn set_entry_metadata_with_ino(&mut self, ino: impl Into<DriveId>, drive_metadata: File) -> anyhow::Result<()> {
         let entry = self.get_entry_mut(ino).context("no entry with ino")?;
 
         Self::update_entry_metadata(drive_metadata, entry)
     }
+
     #[instrument]
     fn update_entry_metadata(drive_metadata: File, entry: &mut DriveEntry) -> anyhow::Result<()> {
         if let Some(name) = drive_metadata.name {
@@ -737,90 +644,8 @@ impl DriveFilesystem {
         warn!("how could I get here?");
         debug(md5_checksum);
         debug(entry);
+        //TODO: make sure this case does not happen
         return ChecksumMatch::Unknown;
-        /*
-        // let checksum_match: ChecksumMatch = match md5_checksum {
-        //     Some(remote_md5_checksum) => {
-        //         if let Some(cache_checksum) = &entry.md5_checksum {
-        //             if cache_checksum != remote_md5_checksum {
-        //                 debug!("md5_checksum mismatch: {} != {}", cache_checksum, remote_md5_checksum);
-        //                 if let Some(local_md5_checksum) = &entry.local_md5_checksum {
-        //                     if local_md5_checksum == remote_md5_checksum {
-        //                         debug!("md5_checksum local match: {} == {} (local)", local_md5_checksum, remote_md5_checksum);
-        //                         ChecksumMatch::CacheMismatch
-        //                     } else {
-        //                         debug!("md5_checksum local mismatch: {} != {} (local)", local_md5_checksum, remote_md5_checksum);
-        //                         ChecksumMatch::Conflict
-        //                     }
-        //                 } else {
-        //                     debug!("md5_checksum local missing, can't compare, treating as a mismatch");
-        //                     ChecksumMatch::Mismatch
-        //                 }
-        //             } else {
-        //                 if let Some(local_md5_checksum) = &entry.local_md5_checksum {
-        //                     if local_md5_checksum == remote_md5_checksum {
-        //                         debug!("md5_checksum local match: {} == {} (local)", local_md5_checksum, remote_md5_checksum);
-        //                         ChecksumMatch::Match
-        //                     } else {
-        //                         debug!("md5_checksum local mismatch: {} != {} (local)", local_md5_checksum, remote_md5_checksum);
-        //                         ChecksumMatch::LocalMismatch
-        //                     }
-        //                 } else {
-        //                     debug!("md5_checksum match: {} == {}", cache_checksum, remote_md5_checksum);
-        //                     ChecksumMatch::LocalMismatch
-        //                 }
-        //             }
-        //         } else {
-        //             if let Some(local_md5_checksum) = &entry.local_md5_checksum {
-        //                 if local_md5_checksum == remote_md5_checksum {
-        //                     debug!("md5_checksum local match: {} == {} (local)", local_md5_checksum, remote_md5_checksum);
-        //                     ChecksumMatch::CacheMismatch
-        //                 } else {
-        //                     debug!("md5_checksum local mismatch: {} != {} (local)", local_md5_checksum, remote_md5_checksum);
-        //                     ChecksumMatch::Conflict
-        //                 }
-        //             } else {
-        //                 debug!("local and cache md5_checksum missing but remote exists");
-        //                 ChecksumMatch::RemoteMismatch
-        //             }
-        //         }
-        //     }
-        //     None => {
-        //         warn!("no remote md5_checksum, can't compare, treating as a missing");
-        //         ChecksumMatch::Missing
-        //     }
-        // };
-        // return checksum_match;
-        // if let Some(md5_checksum) = md5_checksum {
-        //     if let Some(entry_checksum) = &entry.md5_checksum {
-        //         if entry_checksum != md5_checksum {
-        //             debug!("md5_checksum mismatch: {} != {}", entry_checksum, md5_checksum);
-        //             if let Some(local_md5_checksum) = &entry.local_md5_checksum {
-        //                 if local_md5_checksum == md5_checksum {
-        //                     debug!("md5_checksum local match: {} == {} (local)", local_md5_checksum, md5_checksum);
-        //                     checksum_match = ChecksumMatch::CacheMismatch;
-        //                 } else {
-        //                     debug!("md5_checksum local mismatch: {} != {} (local)", local_md5_checksum, md5_checksum);
-        //                     checksum_match = ChecksumMatch::Mismatch;
-        //                 }
-        //             } else {
-        //                 debug!("no local_md5_checksum in entry: {}", entry.ino);
-        //                 checksum_match = ChecksumMatch::Mismatch;
-        //             }
-        //         } else {
-        //             debug!("md5_checksum match: {} == {}", entry_checksum, md5_checksum);
-        //             checksum_match = ChecksumMatch::Match;
-        //         }
-        //     } else {
-        //         debug!("no md5_checksum in entry: {}", entry.ino);
-        //         checksum_match = ChecksumMatch::Missing;
-        //     }
-        // } else {
-        //     debug!("no md5_checksum in drive_metadata");
-        //     checksum_match = ChecksumMatch::Missing;
-        // }
-        // checksum_match
-         */
     }
 
     #[instrument]
@@ -855,7 +680,7 @@ impl DriveFilesystem {
         changes
     }
     fn remove_entry(&mut self, id: &DriveId) -> anyhow::Result<()> {
-        let entry = self.entries.remove_entry(&id);
+        let _entry = self.entries.remove_entry(&id);
 
         //TODO: remove from children
         //TODO: remove from cache if it exists
@@ -863,7 +688,7 @@ impl DriveFilesystem {
     }
     fn get_input_from_user(message: &str, options: Vec<&str>) -> String {
         let mut input = String::new();
-        loop{
+        loop {
             Self::print_message_to_user(message);
             let size_read = std::io::stdin().read_line(&mut input);
             if let Ok(size_read) = size_read {
@@ -874,15 +699,14 @@ impl DriveFilesystem {
                     }
                 }
                 Self::print_message_to_user("invalid input, please try again");
-            }
-            else{
+            } else {
                 error!("could not read input from user: {:?}", size_read);
             }
         }
     }
     fn print_message_to_user(message: &str) {
-        let x = stdout().write_all(format!("{}\n",message).as_bytes());
-        let x = stdout().flush();
+        let _x = stdout().write_all(format!("{}\n", message).as_bytes());
+        let _x = stdout().flush();
     }
 }
 
@@ -890,31 +714,14 @@ impl DriveFilesystem {
 
 // region common
 impl DriveFilesystem {
-    pub(crate) fn get_root_path(&self) -> LocalPath {
-        self.root.clone().into()
-    }
-
-    fn generate_ino(&self) -> Inode {
-        self.generate_ino_with_offset(0)
-    }
     fn generate_ino_with_offset(&self, offset: usize) -> Inode {
         Inode::new((self.entries.len() + 10 + offset) as u64)
     }
 
-    fn convert_to_system_time(mtime: TimeOrNow) -> SystemTime {
-        let mtime = match mtime {
-            TimeOrNow::SpecificTime(t) => t,
-            TimeOrNow::Now => SystemTime::now(),
-        };
-        mtime
-    }
-
-    fn get_entry(&self, ino: impl Into<DriveId>) -> Option<&DriveEntry> {
-        self.entries.get(&ino.into())
-    }
     fn get_entry_mut(&mut self, ino: impl Into<DriveId>) -> Option<&mut DriveEntry> {
         self.entries.get_mut(&ino.into())
     }
+
     fn get_entry_r<'a>(&self, ino: impl Into<&'a DriveId>) -> Result<&DriveEntry> {
         let ino = ino.into();
         self.entries
@@ -954,14 +761,22 @@ impl Filesystem for DriveFilesystem {
     #[instrument(fields(% self))]
     fn destroy(&mut self) {
         debug!("destroy");
-        self.file_uploader_sender.send(FileUploaderCommand::Stop);
+        let stop_res = run_async_blocking(self.file_uploader_sender.send(FileUploaderCommand::Stop));
+        if let Err(e) = stop_res {
+            error!("could not send stop command to file uploader: {}", e);
+        }
     }
     //endregion
     //region lookup
     #[instrument(skip(_req, reply), fields(% self))]
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         debug!("lookup: {}:{:?}", parent, name);
-        run_async_blocking(self.update_entry_metadata_cache_if_needed());
+        let update_res = run_async_blocking(self.update_entry_metadata_cache_if_needed());
+        if let Err(e) = update_res {
+            error!("read: could not update metadata cache: {}", e);
+            reply.error(libc::EIO);
+            return;
+        }
         let parent = parent.into();
         let parent_drive_id = self.get_drive_id_from_ino(&parent);
         if parent_drive_id.is_err() {
@@ -1009,7 +824,12 @@ impl Filesystem for DriveFilesystem {
     #[instrument(skip(_req, reply), fields(% self))]
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
         debug!("getattr: {}", ino);
-        run_async_blocking(self.update_entry_metadata_cache_if_needed());
+        let update_res = run_async_blocking(self.update_entry_metadata_cache_if_needed());
+        if let Err(e) = update_res {
+            error!("read: could not update metadata cache: {}", e);
+            reply.error(libc::EIO);
+            return;
+        }
         debug!("getattr: after update_entry_metadata_cache_if_needed");
         let drive_id = self.get_drive_id_from_ino(&ino.into());
         if drive_id.is_err() {
@@ -1082,7 +902,7 @@ impl Filesystem for DriveFilesystem {
             reply.error(libc::ENOENT);
             return;
         }
-        let mut entry = entry.unwrap();
+        let entry = entry.unwrap();
         let attr = &mut entry.attr;
 
         if let Some(mode) = mode {
@@ -1193,16 +1013,8 @@ impl Filesystem for DriveFilesystem {
             file.seek(SeekFrom::Start(offset as u64)).unwrap();
             file.write_all(data).unwrap();
             let size = data.len();
-            // let size = file.write_at(data, offset as u64);
-            // if let Err(e) = size {
-            //     error!("write: could not write file: {:?}: {}", path, e);
-            //     reply.error(libc::ENOENT);
-            //     return;
-            // }
-            // let size = size.unwrap();
             debug!("wrote   file: {:?} at {}; wrote {} bytes", &path, offset, size);
             reply.written(size as u32);
-            //TODO: update size in entry if necessary
             debug!("updating size to {} for entry: {:?}", entry.attr.size, entry);
             let mut attr = &mut entry.attr;
             if truncate {
@@ -1227,7 +1039,11 @@ impl Filesystem for DriveFilesystem {
         let drive_id = drive_id.unwrap();
         let entry = self.get_entry_r(drive_id)
                         .expect("how could this happen to me. I swear it was there a second ago");
-        run_async_blocking(self.schedule_upload(&entry));
+        let schedule_res = run_async_blocking(self.schedule_upload(&entry));
+        if let Err(e) = schedule_res {
+            error!("read: could not schedule the upload: {}", e);
+            return;
+        }
     }
     //endregion
     //region read
@@ -1248,24 +1064,18 @@ impl Filesystem for DriveFilesystem {
             ino, fh, offset, size, flags, lock_owner
         );
 
-        run_async_blocking(self.update_entry_metadata_cache_if_needed());
+        let update_res = run_async_blocking(self.update_entry_metadata_cache_if_needed());
+        if let Err(e) = update_res {
+            error!("read: could not update metadata cache: {}", e);
+            reply.error(libc::EIO);
+            return;
+        }
         let x: Result<bool> = run_async_blocking(self.update_cache_if_needed(ino));
         if let Err(e) = x {
             error!("read: could not update cache: {}", e);
             reply.error(libc::EIO);
             return;
         }
-        // let is_cached = self.check_if_file_is_cached(ino);
-        // if !is_cached.unwrap_or(false) {
-        //     debug!("read: file is not cached: {}", ino);
-        //     let x: Result<PathBuf> = run_async_blocking(self.download_file_to_cache(ino));
-        //
-        //     if let Err(e) = x {
-        //         error!("read: could not download file: {}", e);
-        //         reply.error(libc::ENOENT);
-        //         return;
-        //     }
-        // }
 
         let drive_id = self.get_drive_id_from_ino(&ino.into());
         if drive_id.is_err() {
@@ -1297,7 +1107,7 @@ impl Filesystem for DriveFilesystem {
             reply.error(libc::EIO);
             return;
         }
-        let mut file = file.unwrap();
+        let file = file.unwrap();
 
         let mut buf = vec![0; size as usize];
         debug!("reading file: {:?} at {} with size {}", &path, offset, size);
@@ -1317,7 +1127,12 @@ impl Filesystem for DriveFilesystem {
         mut reply: ReplyDirectory,
     ) {
         debug!("readdir: {}:{}:{:?}", ino, fh, offset);
-        run_async_blocking(self.update_entry_metadata_cache_if_needed());
+        let update_res = run_async_blocking(self.update_entry_metadata_cache_if_needed());
+        if let Err(e) = update_res {
+            error!("read: could not update metadata cache: {}", e);
+            reply.error(libc::EIO);
+            return;
+        }
         let drive_id = self.get_drive_id_from_ino(&ino.into());
         if drive_id.is_err() {
             warn!("readdir: could not get drive id for ino: {}", ino);
@@ -1372,7 +1187,7 @@ impl Filesystem for DriveFilesystem {
     //endregion
     //region access
     #[instrument(fields(% self, ino, mask))]
-    fn access(&mut self, _req: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
+    fn access(&mut self, _req: &Request<'_>, _ino: u64, _mask: i32, reply: ReplyEmpty) {
         reply.ok(); //TODO: implement this correctly
     }
     //endregion

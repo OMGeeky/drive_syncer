@@ -1,7 +1,5 @@
 use std::ffi::OsString;
-use std::fmt::{Display, Pointer};
-
-use anyhow::Context;
+use std::fmt::Display;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DriveId(String);

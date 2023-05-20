@@ -1,33 +1,27 @@
-use crate::async_helper::run_async_blocking;
-use crate::common::LocalPath;
-use crate::fs::inode::Inode;
-use crate::google_drive::DriveId;
-use crate::prelude::*;
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fmt::Debug;
+use std::path::PathBuf;
+use std::time::SystemTime;
+
 use anyhow::anyhow;
 use async_trait::async_trait;
-use fuser::{FileAttr, FileType, TimeOrNow, FUSE_ROOT_ID};
+use fuser::{FileAttr, FileType, FUSE_ROOT_ID, TimeOrNow};
 use tracing::debug;
-use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
-use std::fmt::Debug;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+
+use crate::common::LocalPath;
+use crate::fs::inode::Inode;
+use crate::prelude::*;
 
 pub trait CommonEntry {
     fn get_ino(&self) -> Inode;
     fn get_name(&self) -> &OsStr;
     fn get_local_path(&self) -> &LocalPath;
     fn get_attr(&self) -> &FileAttr;
-
-    // fn new(
-    //     ino: impl Into<Inode>,
-    //     name: impl Into<OsString>,
-    //     local_path: impl Into<LocalPath>,
-    //     attr: FileAttr,
-    // ) -> Self;
 }
+
 #[async_trait]
-pub trait CommonFilesystem<Entry: CommonEntry > {
+pub trait CommonFilesystem<Entry: CommonEntry> {
     fn get_entries(&self) -> &HashMap<Inode, Entry>;
     fn get_entries_mut(&mut self) -> &mut HashMap<Inode, Entry>;
     fn get_children(&self) -> &HashMap<Inode, Vec<Inode>>;
@@ -146,7 +140,7 @@ pub trait CommonFilesystem<Entry: CommonEntry > {
         name: &OsStr,
         mode: u16,
         file_type: FileType,
-        parent_ino: impl Into<Inode> + Send+ Debug,
+        parent_ino: impl Into<Inode> + Send + Debug,
         size: u64,
     ) -> Result<Inode>;
 
@@ -155,10 +149,10 @@ pub trait CommonFilesystem<Entry: CommonEntry > {
         entry: Entry,
         parent_ino: impl Into<Inode> + Debug,
     ) -> Inode
-    where Entry: Debug{
+        where Entry: Debug {
         let ino = entry.get_ino();
         self.get_entries_mut().insert(
-            ino,entry,
+            ino, entry,
         );
 
         self.add_child(parent_ino, &ino);

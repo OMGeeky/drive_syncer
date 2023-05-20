@@ -1,12 +1,15 @@
 use std::path::{Path, PathBuf};
-use crate::prelude::*;
-use ignore::gitignore;
+
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+
+use crate::prelude::*;
+
 #[derive(Debug)]
 pub struct CommonFileFilter {
     pub filter: Gitignore,
 }
-impl CommonFileFilter{
+
+impl CommonFileFilter {
     pub fn from_path(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         let ignores = GitignoreBuilder::new(&path)
