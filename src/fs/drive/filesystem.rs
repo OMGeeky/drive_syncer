@@ -929,6 +929,76 @@ impl Filesystem for DriveFilesystem {
         //TODO: update file on drive if necessary
     }
     //endregion
+    //region read
+    #[instrument(skip(_req, reply), fields(% self))]
+    fn read(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        size: u32,
+        flags: i32,
+        lock_owner: Option<u64>,
+        reply: ReplyData,
+    ) {
+        debug!(
+            "read: {:10}:{:2}:{:3}:{:10}:{:10X}:{:?}",
+            ino, fh, offset, size, flags, lock_owner
+        );
+
+        let update_res = run_async_blocking(self.update_entry_metadata_cache_if_needed());
+        if let Err(e) = update_res {
+            error!("read: could not update metadata cache: {}", e);
+            reply.error(libc::EIO);
+            return;
+        }
+        let x: Result<bool> = run_async_blocking(self.update_cache_if_needed(ino));
+        if let Err(e) = x {
+            error!("read: could not update cache: {}", e);
+            reply.error(libc::EIO);
+            return;
+        }
+
+        let drive_id = self.get_drive_id_from_ino(&ino.into());
+        if drive_id.is_err() {
+            warn!("readdir: could not get drive id for ino: {}", ino);
+            reply.error(libc::ENOENT);
+            return;
+        }
+        let drive_id = drive_id.unwrap();
+        let entry = self.get_entry_r(drive_id);
+        if let Err(e) = entry {
+            error!("read: could not find entry for {}: {}", ino, e);
+            reply.error(libc::ENOENT);
+            return;
+        }
+        let entry = entry.unwrap();
+
+        let path = self.get_cache_path_for_entry(&entry);
+        if let Err(e) = path {
+            error!("read: could not get cache path: {}", e);
+            reply.error(libc::ENOENT);
+            return;
+        }
+        let path = path.unwrap();
+
+        debug!("read: path: {:?}", path);
+        let file = std::fs::File::open(&path);
+        if let Err(e) = file {
+            error!("read: could not open file: {}", e);
+            reply.error(libc::EIO);
+            return;
+        }
+        let file = file.unwrap();
+
+        let mut buf = vec![0; size as usize];
+        debug!("reading file: {:?} at {} with size {}", &path, offset, size);
+        file.read_at(&mut buf, offset as u64).unwrap();
+        debug!("read file: {:?} at {}", &path, offset);
+        reply.data(&buf);
+    }
+    //endregion
     //region write
     #[instrument(skip(_req, reply), fields(% self, data = data.len()))]
     fn write(&mut self,
@@ -1044,76 +1114,6 @@ impl Filesystem for DriveFilesystem {
             error!("read: could not schedule the upload: {}", e);
             return;
         }
-    }
-    //endregion
-    //region read
-    #[instrument(skip(_req, reply), fields(% self))]
-    fn read(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
-        fh: u64,
-        offset: i64,
-        size: u32,
-        flags: i32,
-        lock_owner: Option<u64>,
-        reply: ReplyData,
-    ) {
-        debug!(
-            "read: {:10}:{:2}:{:3}:{:10}:{:10X}:{:?}",
-            ino, fh, offset, size, flags, lock_owner
-        );
-
-        let update_res = run_async_blocking(self.update_entry_metadata_cache_if_needed());
-        if let Err(e) = update_res {
-            error!("read: could not update metadata cache: {}", e);
-            reply.error(libc::EIO);
-            return;
-        }
-        let x: Result<bool> = run_async_blocking(self.update_cache_if_needed(ino));
-        if let Err(e) = x {
-            error!("read: could not update cache: {}", e);
-            reply.error(libc::EIO);
-            return;
-        }
-
-        let drive_id = self.get_drive_id_from_ino(&ino.into());
-        if drive_id.is_err() {
-            warn!("readdir: could not get drive id for ino: {}", ino);
-            reply.error(libc::ENOENT);
-            return;
-        }
-        let drive_id = drive_id.unwrap();
-        let entry = self.get_entry_r(drive_id);
-        if let Err(e) = entry {
-            error!("read: could not find entry for {}: {}", ino, e);
-            reply.error(libc::ENOENT);
-            return;
-        }
-        let entry = entry.unwrap();
-
-        let path = self.get_cache_path_for_entry(&entry);
-        if let Err(e) = path {
-            error!("read: could not get cache path: {}", e);
-            reply.error(libc::ENOENT);
-            return;
-        }
-        let path = path.unwrap();
-
-        debug!("read: path: {:?}", path);
-        let file = std::fs::File::open(&path);
-        if let Err(e) = file {
-            error!("read: could not open file: {}", e);
-            reply.error(libc::EIO);
-            return;
-        }
-        let file = file.unwrap();
-
-        let mut buf = vec![0; size as usize];
-        debug!("reading file: {:?} at {} with size {}", &path, offset, size);
-        file.read_at(&mut buf, offset as u64).unwrap();
-        debug!("read file: {:?} at {}", &path, offset);
-        reply.data(&buf);
     }
     //endregion
     //region readdir
