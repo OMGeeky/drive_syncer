@@ -153,7 +153,7 @@ impl<'a> DriveFileUploader {
             self.running_uploads.remove(drive_id);
         }
     }
-    #[instrument(skip(file_metadata))]
+    #[instrument(skip(file_metadata, rc), fields(drive=%drive))]
     async fn upload_file(drive: GoogleDrive,
                          file_metadata: drive3::api::File,
                          local_path: PathBuf,

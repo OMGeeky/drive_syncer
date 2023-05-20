@@ -27,7 +27,7 @@ pub trait CommonEntry {
     // ) -> Self;
 }
 #[async_trait]
-pub trait CommonFilesystem<Entry: CommonEntry> {
+pub trait CommonFilesystem<Entry: CommonEntry > {
     fn get_entries(&self) -> &HashMap<Inode, Entry>;
     fn get_entries_mut(&mut self) -> &mut HashMap<Inode, Entry>;
     fn get_children(&self) -> &HashMap<Inode, Vec<Inode>>;
@@ -135,13 +135,13 @@ pub trait CommonFilesystem<Entry: CommonEntry> {
         debug!("add_file_entry: {}:{:?}; {}", parent, name, mode);
 
         let ino = self
-            .add_entry(name, mode, FileType::RegularFile, parent, size)
+            .add_entry_new(name, mode, FileType::RegularFile, parent, size)
             .await?;
 
         Ok(ino)
     }
 
-    async fn add_entry(
+    async fn add_entry_new(
         &mut self,
         name: &OsStr,
         mode: u16,
@@ -149,6 +149,21 @@ pub trait CommonFilesystem<Entry: CommonEntry> {
         parent_ino: impl Into<Inode> + Send+ Debug,
         size: u64,
     ) -> Result<Inode>;
+
+    fn add_entry(
+        &mut self,
+        entry: Entry,
+        parent_ino: impl Into<Inode> + Debug,
+    ) -> Inode
+    where Entry: Debug{
+        let ino = entry.get_ino();
+        self.get_entries_mut().insert(
+            ino,entry,
+        );
+
+        self.add_child(parent_ino, &ino);
+        ino
+    }
 
     fn add_child(&mut self, parent_ino: impl Into<Inode>, ino: impl Into<Inode>) {
         let parents_child_list = self

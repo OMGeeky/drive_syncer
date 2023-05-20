@@ -1,3 +1,4 @@
+use tracing::{error, instrument};
 use anyhow::{anyhow, Context};
 use drive3::api::{Drive, File};
 use drive3::chrono::{DateTime, Utc};
@@ -39,10 +40,16 @@ pub struct Change {
 
 impl TryFrom<DriveChange> for Change {
     type Error = anyhow::Error;
+    #[instrument]
     fn try_from(drive_change: DriveChange) -> anyhow::Result<Self> {
         let removed = drive_change.removed.unwrap_or(false);
+        let drive_id = drive_change.file_id.context("drive_id is missing");
+        if let Err(e) = drive_id {
+            error!("drive_id is missing: {:?}", e);
+            return Err(anyhow!("drive_id is missing: {:?}", e));
+        }
         Ok(Self {
-            drive_id: DriveId::from(drive_change.drive_id.context("drive_id is missing")?),
+            drive_id: DriveId::from(drive_id?),
             kind: ChangeType::from_drive_change(drive_change.change_type, drive_change.file, drive_change.drive, removed)?,
             time: drive_change.time.context("time is missing")?,
             removed,

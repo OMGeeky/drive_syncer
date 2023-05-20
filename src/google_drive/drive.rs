@@ -28,9 +28,86 @@ use tracing::field::debug;
 use crate::google_drive::{drive, DriveId, helpers};
 use crate::prelude::*;
 
+const FIELDS_FILE: &str = "id, name, size, mimeType, kind, md5Checksum, parents,trashed,  createdTime, modifiedTime, viewedByMeTime";
+
 #[derive(Clone)]
 pub struct GoogleDrive {
     hub: DriveHub<HttpsConnector<HttpConnector>>,
+}
+
+impl GoogleDrive {
+    #[instrument]
+    pub(crate) async fn list_all_files(&self) -> anyhow::Result<Vec<File>> {
+        let mut files = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            debug!("list_files: page_token: {:?}", page_token);
+            let mut request =
+                self
+                    .hub
+                    .files()
+                    .list()
+                    .param(
+                        "fields",
+                        &format!("nextPageToken, files({})", FIELDS_FILE),
+                    );
+            if let Some(page_token) = page_token {
+                request = request.page_token(&page_token);
+            }
+            let (response, result) = request
+                .doit()
+                .await?;
+            let result_files = result.files.ok_or(anyhow!("no file list returned"))?;
+            debug!("list_files: response: {:?}", result_files.len());
+            files.extend(result_files);
+            page_token = result.next_page_token;
+            if page_token.is_none() {
+                break;
+            }
+        }
+        Ok(files)
+    }
+    // 
+    // #[instrument]
+    // pub async fn list_files(&self, folder_id: DriveId) -> anyhow::Result<Vec<File>> {
+    //     debug!("list_files: folder_id: {:?}", folder_id);
+    //     let folder_id: OsString = folder_id.into();
+    //     let folder_id = match folder_id.into_string() {
+    //         Ok(folder_id) => folder_id,
+    //         Err(_) => return Err(anyhow!("invalid folder_id")),
+    //     };
+    //     if folder_id.is_empty() {
+    //         return Err(anyhow!("folder_id is empty"));
+    //     }
+    //     if folder_id.contains('\'') {
+    //         return Err(anyhow!("folder_id contains invalid character"));
+    //     }
+    //     let mut files = Vec::new();
+    //     let mut page_token = None;
+    //     loop {
+    //         debug!("list_files: page_token: {:?}", page_token);
+    //         let (response, result) = self
+    //             .hub
+    //             .files()
+    //             .list()
+    //             .param(
+    //                 "fields",
+    //                 &format!("nextPageToken, files({})", FIELDS_FILE),
+    //             )
+    //             // .page_token(page_token.as_ref().map(String::as_str))
+    //             .q(format!("'{}' in parents", folder_id).as_str())
+    //             .doit()
+    //             .await?;
+    //         let result_files = result.files.ok_or(anyhow!("no file list returned"))?;
+    //         debug!("list_files: response: {:?}", result_files.len());
+    //         files.extend(result_files);
+    //         page_token = result.next_page_token;
+    //         if page_token.is_none() {
+    //             break;
+    //         }
+    //     }
+    //     Ok(files)
+    // }
 }
 
 impl GoogleDrive {
@@ -48,20 +125,28 @@ impl GoogleDrive {
         let mut page_token: Option<String> = None;
         loop {
             debug!("getting changes since {:?} page: {:?}", start_page_token, page_token);
+            let file_spec = &format!("file({})", FIELDS_FILE);
             let mut request = self
                 .hub
                 .changes()
                 .list(&start_page_token
                     .start_page_token
                     .as_ref()
-                    .context("no start_page_token")?);
+                    .context("no start_page_token")?)
+                .param("fields", &format!("changes({}, changeType, removed, fileId, \
+                driveId, drive, time), newStartPageToken, nextPageToken", file_spec));
             if let Some(page_token) = &page_token {
                 request = request.page_token(page_token);
             }
-            let (_response, change_list) = request
+            let response = request
                 .doit()
                 .await
-                .context("could not get changes")?;
+                .context("could not get changes");
+            if let Err(e) = &response {
+                error!("error getting changes: {:?}", e);
+                return Err(anyhow!("error getting changes: {:?}", e));
+            }
+            let (_response, change_list) = response?;
             if let Some(change_list) = change_list.changes {
                 changes.extend(change_list);
             }
@@ -82,12 +167,12 @@ impl GoogleDrive {
 impl GoogleDrive {
     #[instrument]
     pub(crate) async fn get_metadata_for_file(&self, drive_id: DriveId) -> anyhow::Result<File> {
-        let drive_id = drive_id.into_string().map_err(|_| anyhow!("invalid drive_id"))?;
+        let drive_id = drive_id.to_string();
         let (response, file) = self
             .hub
             .files()
             .get(&drive_id)
-            .param("fields", "id, name, modifiedTime, driveId, size, createdTime, viewedByMeTime")
+            .param("fields", &FIELDS_FILE)
             .doit().await?;
 
         Ok(file)
@@ -120,10 +205,7 @@ impl GoogleDrive {
             file_id,
             target_file.display()
         );
-        let file_id: String = match file_id.try_into() {
-            Ok(file_id) => file_id,
-            Err(e) => return Err(anyhow!("invalid file_id: {:?}", e).into()),
-        };
+        let file_id: String = file_id.to_string();
 
         let file = download_file_by_id(&self, file_id, target_file.as_path()).await;
         debug!("download_file: completed");
@@ -245,7 +327,7 @@ impl GoogleDrive {
                 .list()
                 .param(
                     "fields",
-                    "nextPageToken, files(id, name, size, mimeType, kind)",
+                    &format!("nextPageToken, files({})", FIELDS_FILE),
                 )
                 // .page_token(page_token.as_ref().map(String::as_str))
                 .q(format!("'{}' in parents", folder_id).as_str())
@@ -318,10 +400,11 @@ async fn download_file_by_id(
 ) -> Result<File> {
     use tokio::fs::File;
     use tokio::io::AsyncWriteExt;
+    let id = id.into();
     let (response, content): (Response<Body>, google_drive3::api::File) = hub
         .hub
         .files()
-        .get(&id.into())
+        .get(&id)
         .add_scope(Scope::Readonly)
         .acknowledge_abuse(true)
         .param("alt", "media")
@@ -331,8 +414,17 @@ async fn download_file_by_id(
     debug!("download_file_by_id(): response: {:?}", response);
     debug!("download_file_by_id(): content: {:?}", content);
     write_body_to_file(response, target_path).await?;
+    let (_, file) = hub
+        .hub
+        .files()
+        .get(&id)
+        .add_scope(Scope::Readonly)
+        .param("fields", FIELDS_FILE)
+        .doit()
+        .await?;
+    debug!("download_file_by_id(): file: {:?}", file);
 
-    Ok(content)
+    Ok(file)
 }
 
 async fn write_body_to_file(response: Response<Body>, target_path: &Path) -> Result<()> {
@@ -477,7 +569,7 @@ async fn update_file_content_on_drive(
         .hub
         .files()
         .update(file, &id)
-        .upload(stream, mime_type)
+        .upload_resumable(stream, mime_type)
         .await?;
     debug!("upload done!");
     debug!("update_file_on_drive(): response: {:?}", response);

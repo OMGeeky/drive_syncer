@@ -152,7 +152,7 @@ impl CommonFilesystem<SampleEntry> for SampleFilesystem {
     fn get_root_path(&self) -> LocalPath {
         self.source.clone().into()
     }
-    async fn add_entry(
+    async fn add_entry_new(
         &mut self,
         name: &OsStr,
         mode: u16,
@@ -202,7 +202,7 @@ impl SampleFilesystem {
             ino = parent_ino;
         } else {
             ino = self
-                .add_entry(
+                .add_entry_new(
                     folder_path.file_name().unwrap(),
                     /*TODO: correct permissions*/
                     0o755,

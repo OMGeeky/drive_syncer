@@ -13,38 +13,38 @@ pub fn get_mime_from_file_metadata(file: &File) -> anyhow::Result<Mime> {
         &file.mime_type.as_ref().unwrap_or(&"*/*".to_string()),
     )?)
 }
-pub fn get_drive_id_from_local_path(drive: &DriveFilesystem, path: &Path) -> Result<DriveId> {
-    let drive_mount_point: &PathBuf = &drive.get_root_path().into();
-    debug!("get_drive_id_from_path(): (0) path: '{}'", path.display());
-    let path = match path.strip_prefix(drive_mount_point) {
-        Err(e) => {
-            return Err(anyhow!(
-                "Path {:?} is not a prefix of {:?}",
-                drive_mount_point,
-                path
-            ))?
-        }
-        Ok(path) => path,
-    };
-    debug!("get_drive_id_from_path(): (1) path: '{}'", path.display());
-    if path == Path::new("/") || path == Path::new("") {
-        debug!(
-            "get_drive_id_from_path(): (1) path is root: '{}'",
-            path.display()
-        );
-        return Ok("root".into());
-    }
-
-    let mut parent_ino: Inode = 5u32.into();
-    // let mut parent_ino : Inode =Inode::from(5u32);//.into();
-    for part in path.iter() {
-        debug!("get_drive_id_from_path(): (2..) path: '{:?}'", part);
-
-        let children = drive.get_children().get(&parent_ino);
-        debug!("get_drive_id_from_path(): (2..) children: '{:?}'", children);
-    }
-    todo!("get_drive_id_from_path()")
-}
+// pub fn get_drive_id_from_local_path(drive: &DriveFilesystem, path: &Path) -> Result<DriveId> {
+//     let drive_mount_point: &PathBuf = &drive.get_root_path().into();
+//     debug!("get_drive_id_from_path(): (0) path: '{}'", path.display());
+//     let path = match path.strip_prefix(drive_mount_point) {
+//         Err(e) => {
+//             return Err(anyhow!(
+//                 "Path {:?} is not a prefix of {:?}",
+//                 drive_mount_point,
+//                 path
+//             ))?
+//         }
+//         Ok(path) => path,
+//     };
+//     debug!("get_drive_id_from_path(): (1) path: '{}'", path.display());
+//     if path == Path::new("/") || path == Path::new("") {
+//         debug!(
+//             "get_drive_id_from_path(): (1) path is root: '{}'",
+//             path.display()
+//         );
+//         return Ok("root".into());
+//     }
+//
+//     let mut parent_ino: Inode = 5u32.into();
+//     // let mut parent_ino : Inode =Inode::from(5u32);//.into();
+//     for part in path.iter() {
+//         debug!("get_drive_id_from_path(): (2..) path: '{:?}'", part);
+//
+//         let children = drive.get_children().get(&parent_ino);
+//         debug!("get_drive_id_from_path(): (2..) children: '{:?}'", children);
+//     }
+//     todo!("get_drive_id_from_path()")
+// }
 mod test {
     use super::*;
     // #[tokio::test]

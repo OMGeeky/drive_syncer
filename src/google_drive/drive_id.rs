@@ -1,49 +1,69 @@
 use std::ffi::OsString;
 use std::fmt::{Display, Pointer};
+
+use anyhow::Context;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DriveId(OsString);
+pub struct DriveId(String);
 
 impl DriveId {
     pub(crate) fn root() -> DriveId {
-        DriveId(OsString::from("root"))
+        DriveId(String::from("root"))
     }
-    pub fn as_str(&self) -> Option<&str> {
-        self.0.to_str()
-    }
-    pub fn into_string(self) -> Result<String, OsString> {
-        self.0.into_string()
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 
 impl Into<OsString> for DriveId {
     fn into(self) -> OsString {
-        self.0
+        OsString::from(self.0)
     }
 }
-impl TryInto<String> for DriveId {
-    type Error = OsString;
 
-    fn try_into(self) -> Result<String, Self::Error> {
-        self.0.into_string()
+impl TryFrom<OsString> for DriveId {
+    type Error = anyhow::Error;
+    fn try_from(value: OsString) -> anyhow::Result<Self> {
+        let result = value.into_string();
+        if let Err(e) = result {
+            return Err(anyhow::anyhow!("Failed to convert OsString to String: {:?}", e));
+        }
+        Ok(DriveId::new(result.unwrap()))
     }
 }
-impl From<OsString> for DriveId {
-    fn from(value: OsString) -> Self {
-        DriveId(value)
-    }
-}
+
 impl From<String> for DriveId {
     fn from(value: String) -> Self {
-        OsString::from(value).into()
+        DriveId::new(value)
     }
 }
+
 impl From<&str> for DriveId {
     fn from(s: &str) -> Self {
-        DriveId(OsString::from(s))
+        DriveId::new(s)
     }
 }
+
+impl From<&DriveId> for DriveId {
+    fn from(s: &DriveId) -> Self {
+        s.clone()
+    }
+}
+
+impl From<&String> for DriveId {
+    fn from(s: &String) -> Self {
+        DriveId::new(s)
+    }
+}
+
 impl DriveId {
-    pub fn new(id: impl Into<OsString>) -> Self {
+    pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+}
+
+impl Display for DriveId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
