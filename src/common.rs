@@ -36,9 +36,9 @@ impl From<&OsString> for LocalPath {
 }
 
 impl<T> AsRef<T> for LocalPath
-    where
-        T: ?Sized,
-        <PathBuf as Deref>::Target: AsRef<T>,
+where
+    T: ?Sized,
+    <PathBuf as Deref>::Target: AsRef<T>,
 {
     fn as_ref(&self) -> &T {
         self.0.deref().as_ref()

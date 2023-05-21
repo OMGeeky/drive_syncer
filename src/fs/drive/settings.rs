@@ -43,8 +43,11 @@ impl SyncSettings {
 // endregion
 impl Display for SyncSettings {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SyncSettings {{ ttl: {}s, cache_time: {}s }}",
-               self.time_to_live.as_secs(),
-               self.cache_time.as_secs())
+        write!(
+            f,
+            "SyncSettings {{ ttl: {}s, cache_time: {}s }}",
+            self.time_to_live.as_secs(),
+            self.cache_time.as_secs()
+        )
     }
 }

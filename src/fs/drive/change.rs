@@ -14,14 +14,23 @@ pub enum ChangeType {
 }
 
 impl ChangeType {
-    fn from_drive_change(change_type: Option<String>, file: Option<File>, drive: Option<Drive>, removed: bool) -> anyhow::Result<ChangeType> {
+    fn from_drive_change(
+        change_type: Option<String>,
+        file: Option<File>,
+        drive: Option<Drive>,
+        removed: bool,
+    ) -> anyhow::Result<ChangeType> {
         if removed {
             return Ok(Self::Removed);
         }
         if let Some(change_type) = change_type {
             match change_type.as_str() {
-                "drive" => Ok(Self::Drive(drive.context("no drive but change type was drive")?)),
-                "file" => Ok(Self::File(file.context("no file but change type was file")?)),
+                "drive" => Ok(Self::Drive(
+                    drive.context("no drive but change type was drive")?,
+                )),
+                "file" => Ok(Self::File(
+                    file.context("no file but change type was file")?,
+                )),
                 _ => Err(anyhow!("invalid change type: {}", change_type)),
             }
         } else {
@@ -50,7 +59,12 @@ impl TryFrom<DriveChange> for Change {
         }
         Ok(Self {
             drive_id: DriveId::from(drive_id?),
-            kind: ChangeType::from_drive_change(drive_change.change_type, drive_change.file, drive_change.drive, removed)?,
+            kind: ChangeType::from_drive_change(
+                drive_change.change_type,
+                drive_change.file,
+                drive_change.drive,
+                removed,
+            )?,
             time: drive_change.time.context("time is missing")?,
             removed,
         })

@@ -8,8 +8,10 @@ use tracing::trace;
 /// This function will block the current thread until the provided future has run to completion.
 ///
 /// # Be careful with deadlocks
-pub fn run_async_blocking<T>(f: impl std::future::Future<Output=T> + Sized) -> T
-    where T: Debug {
+pub fn run_async_blocking<T>(f: impl std::future::Future<Output = T> + Sized) -> T
+where
+    T: Debug,
+{
     trace!("run_async");
     let handle = Handle::current();
     let _enter_guard = handle.enter();

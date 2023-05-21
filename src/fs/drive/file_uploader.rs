@@ -40,7 +40,6 @@ pub enum FileUploaderCommand {
     CreateFolder(FileCommand),
     CreateFile(FileCommand),
     Stop,
-
 }
 
 #[derive(Debug)]
@@ -60,10 +59,12 @@ pub struct DriveFileUploader {
 
 impl<'a> DriveFileUploader {
     #[instrument]
-    pub fn new(drive: GoogleDrive,
-               upload_filter: CommonFileFilter,
-               receiver: Receiver<FileUploaderCommand>,
-               wait_time_before_upload: Duration) -> Self {
+    pub fn new(
+        drive: GoogleDrive,
+        upload_filter: CommonFileFilter,
+        receiver: Receiver<FileUploaderCommand>,
+        wait_time_before_upload: Duration,
+    ) -> Self {
         Self {
             drive,
             upload_filter,
@@ -89,23 +90,39 @@ impl<'a> DriveFileUploader {
                         let file_metadata = file_command.file_metadata;
                         if !self.upload_filter.is_filter_matched(&path).unwrap_or(false) {
                             let drive = self.drive.clone();
-                            let drive_id = file_metadata.drive_id.clone().with_context(|| "no drive_id");
+                            let drive_id = file_metadata
+                                .drive_id
+                                .clone()
+                                .with_context(|| "no drive_id");
                             if let Err(e) = drive_id {
                                 error!("failed to upload file: {:?} with error: {}", path, e);
                                 continue;
                             }
                             let drive_id = drive_id.unwrap();
 
-                            self.cancel_and_wait_for_running_upload_for_id(&drive_id).await;
+                            self.cancel_and_wait_for_running_upload_for_id(&drive_id)
+                                .await;
 
                             info!("queuing upload of file: {:?}", path);
                             let wait_time_before_upload = self.wait_time_before_upload.clone();
                             let (rx, rc) = channel(1);
-                            let upload_handle = tokio::spawn(async move { Self::upload_file(drive, file_metadata, path, wait_time_before_upload, rc).await });
-                            self.running_uploads.insert(drive_id, RunningUpload {
-                                join_handle: upload_handle,
-                                stop_sender: rx,
+                            let upload_handle = tokio::spawn(async move {
+                                Self::upload_file(
+                                    drive,
+                                    file_metadata,
+                                    path,
+                                    wait_time_before_upload,
+                                    rc,
+                                )
+                                .await
                             });
+                            self.running_uploads.insert(
+                                drive_id,
+                                RunningUpload {
+                                    join_handle: upload_handle,
+                                    stop_sender: rx,
+                                },
+                            );
                         } else {
                             info!("skipping upload of file since it is ignored: {:?}", path);
                         }
@@ -114,11 +131,15 @@ impl<'a> DriveFileUploader {
                         info!("received stop command: stopping file upload listener");
                         break;
                     }
-                    _ => { warn!("received unknown command: {:?}", command); }
+                    _ => {
+                        warn!("received unknown command: {:?}", command);
+                    }
                 };
             } else {
-                warn!("received None command, meaning all senders have been dropped. \
-                stopping file upload listener since no more commands will be received");
+                warn!(
+                    "received None command, meaning all senders have been dropped. \
+                stopping file upload listener since no more commands will be received"
+                );
                 break;
             }
         }
@@ -132,29 +153,44 @@ impl<'a> DriveFileUploader {
         debug!("checking for running uploads for file: {:?}", drive_id);
         let running_uploads: Option<&mut RunningUpload> = self.running_uploads.get_mut(drive_id);
         if let Some(running_upload) = running_uploads {
-            debug!("trying to send stop command to running upload for file: {:?}", drive_id);
+            debug!(
+                "trying to send stop command to running upload for file: {:?}",
+                drive_id
+            );
             let send_stop = running_upload.stop_sender.send(()).await;
             if let Err(e) = send_stop {
-                error!("failed to send stop command to running upload for file: {:?} with error: {}", drive_id, e);
+                error!(
+                    "failed to send stop command to running upload for file: {:?} with error: {}",
+                    drive_id, e
+                );
             }
 
             debug!("waiting for running upload for file: {:?}", drive_id);
             let x: &mut JoinHandle<anyhow::Result<()>> = &mut running_upload.join_handle;
             let _join_res = tokio::join!(x);
-            debug!("finished waiting for running upload for file: {:?} ", drive_id);
+            debug!(
+                "finished waiting for running upload for file: {:?} ",
+                drive_id
+            );
 
             debug!("removing running upload for file: {:?}", drive_id);
             self.running_uploads.remove(drive_id);
         }
     }
     #[instrument(skip(file_metadata, rc), fields(drive = % drive))]
-    async fn upload_file(drive: GoogleDrive,
-                         file_metadata: File,
-                         local_path: PathBuf,
-                         wait_time_before_upload: Duration,
-                         rc: Receiver<()>) -> anyhow::Result<()> {
+    async fn upload_file(
+        drive: GoogleDrive,
+        file_metadata: File,
+        local_path: PathBuf,
+        wait_time_before_upload: Duration,
+        rc: Receiver<()>,
+    ) -> anyhow::Result<()> {
         // debug!("uploading file: {:?}", local_path);
-        debug!("sleeping for {:?} before uploading {}", wait_time_before_upload, local_path.display());
+        debug!(
+            "sleeping for {:?} before uploading {}",
+            wait_time_before_upload,
+            local_path.display()
+        );
         tokio::select! {
             _ = Self::wait_for_cancel_signal(rc) => {
                 debug!("received stop signal: stopping upload");
@@ -182,17 +218,24 @@ impl<'a> DriveFileUploader {
             Some(_v) => {
                 debug!("received stop signal: stopping upload");
             }
-            _ => { warn!("received None from cancel signal receiver") }
+            _ => {
+                warn!("received None from cancel signal receiver")
+            }
         }
     }
-    async fn upload_file_(drive: &GoogleDrive, file_metadata: File, local_path: &PathBuf) -> anyhow::Result<()> {
+    async fn upload_file_(
+        drive: &GoogleDrive,
+        file_metadata: File,
+        local_path: &PathBuf,
+    ) -> anyhow::Result<()> {
         debug!("uploading file: {:?}", local_path);
         let path = local_path.as_path();
-        drive.upload_file_content_from_path(file_metadata, path).await?;
+        drive
+            .upload_file_content_from_path(file_metadata, path)
+            .await?;
         // let result = drive.list_files(DriveId::from("root")).await.with_context(|| format!("could not do it"))?;
         debug!("upload_file_: done");
 
         Ok(())
     }
 }
-

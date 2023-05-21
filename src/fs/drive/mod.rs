@@ -4,8 +4,8 @@ pub use file_uploader::*;
 pub use filesystem::*;
 pub use settings::*;
 
-mod entry;
-mod filesystem;
-mod file_uploader;
-mod settings;
 mod change;
+mod entry;
+mod file_uploader;
+mod filesystem;
+mod settings;

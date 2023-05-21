@@ -24,7 +24,10 @@ impl TryFrom<OsString> for DriveId {
     fn try_from(value: OsString) -> anyhow::Result<Self> {
         let result = value.into_string();
         if let Err(e) = result {
-            return Err(anyhow::anyhow!("Failed to convert OsString to String: {:?}", e));
+            return Err(anyhow::anyhow!(
+                "Failed to convert OsString to String: {:?}",
+                e
+            ));
         }
         Ok(DriveId::new(result.unwrap()))
     }

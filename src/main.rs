@@ -44,7 +44,10 @@ async fn sample_logging() {
     use tracing::{debug, error, info, trace, warn};
     info!("info");
     debug!("debug");
-    let s = span!(tracing::Level::TRACE, "span around trace and warn with stdin read");
+    let s = span!(
+        tracing::Level::TRACE,
+        "span around trace and warn with stdin read"
+    );
     {
         let _x = s.enter();
         trace!("trace");
