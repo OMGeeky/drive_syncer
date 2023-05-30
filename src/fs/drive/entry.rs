@@ -17,7 +17,7 @@ pub struct DriveEntry {
     // pub drive_path: OsString,
     pub local_path: Option<LocalPath>,
     pub attr: FileAttr,
-    pub drive_metadata: Option<drive3::api::File>,
+    pub drive_metadata: Option<google_drive3::api::File>,
     pub has_upstream_content_changes: bool,
     pub md5_checksum: Option<String>,
     pub local_md5_checksum: Option<String>,
@@ -39,7 +39,7 @@ impl DriveEntry {
 
         // local_path: impl Into<LocalPath>,
         attr: FileAttr,
-        drive_metadata: Option<drive3::api::File>,
+        drive_metadata: Option<google_drive3::api::File>,
     ) -> Self {
         let name = name.into();
         // let path = local_path.into();

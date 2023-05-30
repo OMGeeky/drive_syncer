@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context};
-use drive3::api::{Drive, File};
-use drive3::chrono::{DateTime, Utc};
 use google_drive3::api::Change as DriveChange;
+use google_drive3::api::{Drive, File};
+use google_drive3::chrono::{DateTime, Utc};
 use tracing::{error, instrument};
 
 use crate::google_drive::DriveId;

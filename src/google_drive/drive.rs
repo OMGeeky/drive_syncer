@@ -1,16 +1,16 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Display};
 use std::io::Write;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-// use drive3::api::Scope::File;
 use anyhow::{anyhow, Context};
-use drive3::api::{Change, File, Scope, StartPageToken};
-use drive3::hyper::client::HttpConnector;
-use drive3::hyper::{Body, Response};
-use drive3::hyper_rustls::HttpsConnector;
-use drive3::DriveHub;
-use drive3::{hyper_rustls, oauth2};
+use google_drive3::api::{Change, File, Scope, StartPageToken};
+use google_drive3::hyper::client::HttpConnector;
+use google_drive3::hyper::{Body, Response};
+use google_drive3::hyper_rustls::HttpsConnector;
+use google_drive3::DriveHub;
+use google_drive3::{hyper_rustls, oauth2};
 use hyper::Client;
 use tokio::fs;
 use tracing::{debug, error, instrument, trace, warn};
@@ -18,7 +18,7 @@ use tracing::{debug, error, instrument, trace, warn};
 use crate::google_drive::{helpers, DriveId};
 use crate::prelude::*;
 
-const FIELDS_FILE: &str = "id, name, size, mimeType, kind, md5Checksum, parents,trashed,  createdTime, modifiedTime, viewedByMeTime";
+const FIELDS_FILE: &str = "id, name, size, mimeType, kind, md5Checksum, parents, trashed, createdTime, modifiedTime, viewedByMeTime";
 
 #[derive(Clone)]
 pub struct GoogleDrive {
@@ -36,6 +36,7 @@ impl GoogleDrive {
                 .hub
                 .files()
                 .list()
+                .q("trashed = false and 'me' in owners") //gets only own files and files not in the trash bin
                 .param("fields", &format!("nextPageToken, files({})", FIELDS_FILE));
             if let Some(page_token) = page_token {
                 request = request.page_token(&page_token);
@@ -155,7 +156,6 @@ impl GoogleDrive {
             file_id,
             target_file.display()
         );
-        let file_id: String = file_id.to_string();
 
         let file = download_file_by_id(&self, file_id, target_file.as_path()).await;
         debug!("download_file: completed");
@@ -231,7 +231,8 @@ impl GoogleDrive {
 impl GoogleDrive {
     #[instrument]
     pub(crate) async fn new() -> Result<Self> {
-        let auth = drive3::oauth2::read_application_secret("auth/client_secret.json").await?;
+        let auth =
+            google_drive3::oauth2::read_application_secret("auth/client_secret.json").await?;
 
         let auth = oauth2::InstalledFlowAuthenticator::builder(
             auth,
@@ -344,6 +345,7 @@ async fn download_file_by_id(
         .doit()
         .await?;
     //TODO: bigger files don't get downloaded. it just starts and then hangs at ~1.3MB forever
+    //  => check if this still happens
     debug!("download_file_by_id(): response: {:?}", response);
     debug!("download_file_by_id(): content: {:?}", content);
     write_body_to_file(response, target_path).await?;
@@ -389,7 +391,7 @@ async fn get_file_header_by_id(hub: &GoogleDrive, id: &str) -> Result<File> {
 async fn get_files_by_name(
     drive: &GoogleDrive,
     name: impl Into<String>,
-) -> Result<Vec<drive3::api::File>> {
+) -> Result<Vec<google_drive3::api::File>> {
     let name = name.into();
     if name.is_empty() {
         return Err(anyhow!("name cannot be empty"));
@@ -406,7 +408,7 @@ async fn get_files_by_name(
         .await?;
     debug!("get_files_by_name(): response: {:?}", response);
     debug!("get_files_by_name(): files: {:?}", files);
-    let files: Vec<drive3::api::File> = files.files.unwrap_or(vec![]);
+    let files: Vec<google_drive3::api::File> = files.files.unwrap_or(vec![]);
     Ok(files)
 }
 
@@ -421,7 +423,7 @@ async fn sample_list_files(drive: &GoogleDrive) -> Result<()> {
         .await?;
     debug!("hello_world_res: {:?}", hello_world_res);
     debug!("hello_world_list: {:?}", hello_world_list);
-    let files: Vec<drive3::api::File> = hello_world_list.files.unwrap_or(vec![]);
+    let files: Vec<google_drive3::api::File> = hello_world_list.files.unwrap_or(vec![]);
     debug!("hello_world_list amount of files: {}", files.len());
     for file in files {
         let name = file.name.unwrap_or("NO NAME".to_string());
@@ -454,7 +456,7 @@ pub async fn create_file_on_drive(
     file: google_drive3::api::File,
     mime_type: mime::Mime,
     content: tokio::fs::File,
-) -> Result<drive3::api::File> {
+) -> Result<google_drive3::api::File> {
     let stream = content.into_std().await;
     let (response, file) = drive
         .hub
@@ -493,15 +495,18 @@ pub async fn update_file_content_on_drive_from_path(
 #[instrument(skip(file, content))]
 async fn update_file_content_on_drive(
     drive: &GoogleDrive,
-    file: File,
+    mut file: File,
     content: fs::File,
 ) -> anyhow::Result<()> {
     let stream = content.into_std().await;
     let mime_type = helpers::get_mime_from_file_metadata(&file)?;
     let id = file
-        .drive_id
+        .id
         .clone()
-        .with_context(|| "file metadata has no drive id")?;
+        .context(format!("file metadata has no drive id: {:?}", file))?;
+    //remove unchangeable data from metadata (that I still need in this request, the rest should only be the changes)
+    file.id = None;
+    file.mime_type = None;
     debug!("starting upload");
     let (response, file) = drive
         .hub

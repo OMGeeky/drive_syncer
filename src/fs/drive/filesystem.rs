@@ -12,11 +12,12 @@ use std::{
 
 use anyhow::{anyhow, Context};
 use bimap::BiMap;
-use drive3::api::{File, StartPageToken};
 use fuser::{
-    FileAttr, FileType, Filesystem, KernelConfig, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty,
-    ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow, FUSE_ROOT_ID,
+    FileAttr, FileType, Filesystem, KernelConfig, ReplyAttr, ReplyData, ReplyDirectory,
+    ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
+    FUSE_ROOT_ID,
 };
+use google_drive3::api::{File, StartPageToken};
 use libc::c_int;
 use tracing::field::debug;
 use tracing::{debug, error, instrument, warn};

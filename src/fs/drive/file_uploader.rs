@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use anyhow::Context;
-use drive3::api::File;
+use google_drive3::api::File;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, instrument, warn};

@@ -1,8 +1,7 @@
-// #![allow(dead_code, unused)]
+#![allow(dead_code, unused)]
 
-extern crate google_drive3 as drive3;
-
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use fuser::{MountOption, Session, SessionUnmounter};
@@ -11,8 +10,9 @@ use tempfile::TempDir;
 // use tokio::io::{AsyncReadExt, stdin};
 // use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{channel, Sender};
 use tokio::task::JoinHandle;
+use tracing::field::debug;
 use tracing::{debug, info};
 
 use prelude::*;

@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::ops::Deref;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Inode(u64);
@@ -47,5 +48,13 @@ impl From<u32> for Inode {
 impl From<&Inode> for Inode {
     fn from(value: &Inode) -> Self {
         value.clone()
+    }
+}
+
+impl Deref for Inode {
+    type Target = u64;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }

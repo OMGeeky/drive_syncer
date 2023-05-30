@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::fmt::Display;
+use std::ops::Deref;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DriveId(String);
@@ -16,6 +17,12 @@ impl DriveId {
 impl Into<OsString> for DriveId {
     fn into(self) -> OsString {
         OsString::from(self.0)
+    }
+}
+
+impl Into<String> for DriveId {
+    fn into(self) -> String {
+        String::from(self.0)
     }
 }
 
@@ -66,5 +73,12 @@ impl DriveId {
 impl Display for DriveId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+impl Deref for DriveId {
+    type Target = String;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
