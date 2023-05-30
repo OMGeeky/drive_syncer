@@ -20,6 +20,7 @@
   - move/rename
 
 ### Prio 2:
+- use the directories crate to get locations where to store configs, cached files etc
 - implement notifying the user of needed actions like conflicts or required authentications via the [notify-rust](https://docs.rs/notify-rust/latest/notify_rust/#example-3-ask-the-user-to-do-something) crate
   - maybe also let the user decide if he wants notifications like this or just wants to stay in the CLI (start param?)
 
