@@ -6,6 +6,7 @@ use tracing::span;
 async fn main() {
     // drive_syncer::init_logger();
     init_tracing();
+    sample_logging().await;
     // drive_syncer::sample().await.unwrap();
     // drive_syncer::google_drive::sample().await.unwrap();
     // drive_syncer::watch_file_reading().await.unwrap();
@@ -13,8 +14,8 @@ async fn main() {
 
     // drive_syncer::sample_fs().await.unwrap();
 
-    sample_logging().await;
-    drive_syncer::sample_drive_fs().await.unwrap();
+    // drive_syncer::sample_drive_fs().await.unwrap();
+    drive_syncer::sample_drive2_fs().await.unwrap();
 }
 
 fn init_tracing() {

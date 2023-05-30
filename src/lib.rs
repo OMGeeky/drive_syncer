@@ -19,6 +19,8 @@ use prelude::*;
 
 use crate::config::common_file_filter::CommonFileFilter;
 use crate::fs::drive::{DriveFileUploader, DriveFilesystem, FileUploaderCommand, SyncSettings};
+use crate::fs::drive_file_provider::{ProviderCommand, ProviderRequest};
+use crate::fs::{drive2, drive_file_provider};
 use crate::google_drive::GoogleDrive;
 
 pub mod async_helper;
@@ -26,8 +28,55 @@ pub mod common;
 pub mod config;
 pub mod fs;
 pub mod google_drive;
+mod macros;
 pub mod prelude;
 
+pub async fn sample_drive2_fs() -> Result<()> {
+    // let mountpoint = "/tmp/fuse/3";
+    let mountpoint = Path::new("/tmp/fuse/3");
+    let perma_dir = "/tmp/fuse/2";
+    use crate::fs::drive2;
+    use crate::fs::drive_file_provider;
+    use std::sync::mpsc::channel;
+
+    let cache_dir = get_cache_dir()?;
+
+    let drive = GoogleDrive::new().await?;
+    let test = drive.list_all_files().await;
+    debug!("test!");
+    for entry in test.unwrap() {
+        debug!("entry: {:?}", entry);
+    }
+    debug!("test!");
+    let (provider_tx, provider_rx) = tokio::sync::mpsc::channel(1);
+    let filesystem = drive2::DriveFilesystem::new(provider_tx);
+    let mount_options = vec![MountOption::RW];
+    let mut mount = fuser::Session::new(filesystem, &mountpoint, &mount_options)?;
+    let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
+
+    let provider_join_handle: JoinHandle<()> = tokio::spawn(drive2_provider(
+        drive,
+        cache_dir.path().to_path_buf(),
+        PathBuf::from(perma_dir),
+        provider_rx,
+        command_rx,
+    ));
+    let mut session_unmounter = mount.unmount_callable();
+    debug!("running mount and listener");
+    tokio::select!(
+        _= async move {mount.run()} => {
+            debug!("mount.run finished first!");
+            let _ = command_tx.send(ProviderCommand::Stop);
+            let _ = session_unmounter.unmount();
+        },
+        _=provider_join_handle => {
+            debug!("provider finished first!");
+            let _ = session_unmounter.unmount();
+        }
+    );
+
+    Ok(())
+}
 pub async fn sample_drive_fs() -> Result<()> {
     let mountpoint = "/tmp/fuse/3";
     let upload_ignore_path = Path::new("config/.upload_ignore");
@@ -114,4 +163,37 @@ async fn end_program_signal_awaiter(
     session_unmounter.unmount()?;
     info!("unmounted");
     Ok(())
+}
+async fn drive2_provider(
+    drive: GoogleDrive,
+    cache_dir: PathBuf,
+    perma_dir: PathBuf,
+    provider_rx: tokio::sync::mpsc::Receiver<ProviderRequest>,
+    command_rx: tokio::sync::mpsc::Receiver<ProviderCommand>,
+) {
+    use std::sync::mpsc::channel;
+    let mut provider = drive_file_provider::DriveFileProvider::new(drive, cache_dir, perma_dir);
+    provider.listen(provider_rx, command_rx).await;
+}
+#[cfg(test)]
+pub mod tests {
+    pub fn init_logs() {
+        use tracing::Level;
+        use tracing_subscriber::fmt;
+        use tracing_subscriber::EnvFilter;
+        // Create a new subscriber with the default configuration
+        let subscriber = fmt::Subscriber::builder()
+            .with_test_writer()
+            // .with_thread_ids(true)
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_max_level(Level::DEBUG)
+            .with_line_number(true)
+            .with_target(true)
+            .with_file(true)
+            // .with_span_events(fmt::format::FmtSpan::NONE)
+            .finish();
+
+        // Install the subscriber as the default for this thread
+        let _ = tracing::subscriber::set_global_default(subscriber); //.expect("setting default subscriber failed");
+    }
 }
