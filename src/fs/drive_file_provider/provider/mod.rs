@@ -134,6 +134,7 @@ impl DriveFileProvider {
             self.children.insert(parent_id, vec![child_id]);
         }
     }
+    //region listeners
     #[instrument(skip(self, request_reciever, command_receiver))]
     pub async fn listen(
         &mut self,
@@ -144,9 +145,10 @@ impl DriveFileProvider {
         tokio::select! {
             _ = Self::listen_for_stop(command_receiver) => {
                 trace!("DriveFileProvider::listen_for_stop() finished");
-                self.cleanup().await;
             },
-            _ = self.listen_for_file_requests(request_reciever) => {trace!("DriveFileProvider::listen_for_file_requests() finished");},
+            _ = self.listen_for_file_requests(request_reciever) => {
+                trace!("DriveFileProvider::listen_for_file_requests() finished");
+            },
         }
     }
     pub async fn listen_for_stop(mut command_receiver: Receiver<ProviderCommand>) {
@@ -168,10 +170,6 @@ impl DriveFileProvider {
         // .await;
         debug!("listen for stop finished");
         // //TODO: implement waiting for the stop signal instead of just waiting for 10 days
-    }
-    pub async fn cleanup(&mut self) {
-        debug!("cleanup got called");
-        todo!("cleanup")
     }
     #[instrument(skip(self, rx))]
     pub async fn listen_for_file_requests(
@@ -209,6 +207,7 @@ impl DriveFileProvider {
         }
         debug!("Received None from file request receiver, that means all senders have been dropped. Ending listener");
     }
+    //endregion
 
     //region request handlers
     //region lookup
@@ -669,40 +668,7 @@ impl DriveFileProvider {
         }
     }
     //endregion
-    // region send response
-    //
-    // async fn send_response(
-    //     request: &dyn ProviderRequestStruct,
-    //     response_data: ProviderResponse,
-    // ) -> Result<()> {
-    //     let result_send_response = request.get_response_sender().send(response_data).;
-    //
-    //     if let Err(e) = result_send_response {
-    //         error!("Failed to send result response: {:?}", e);
-    //         return Err(anyhow!("Failed to send result response: {:?}", e));
-    //     }
-    //     Ok(())
-    // }
-    //
-    // macro_rules! reply_error_e {
-    // ($result_in:ident, $reply:ident, $error_code:expr, $error_msg:expr) => {
-    //     reply_error_e!($result_in, $reply, $error_code, $error_msg,);
-    // };
-    // async fn send_error_response(
-    //     request: &dyn ProviderRequestStruct,
-    //     e: Error,
-    //     code: c_int,
-    // ) -> Result<()> {
-    //     let error_send_response = request
-    //         .get_response_sender()
-    //         .send(ProviderResponse::Error(e, code));
-    //     if let Err(e) = error_send_response {
-    //         error!("Failed to send error response: {:?}", e);
-    //         return Err(anyhow!("Failed to send error response: {:?}", e));
-    //     }
-    //     Ok(())
-    // }
-    //endregion
+
     //region drive helpers
 
     /// starts a download of the specified file and puts it in the running_requests map
