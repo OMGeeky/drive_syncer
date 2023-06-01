@@ -20,12 +20,12 @@ macro_rules! match_provider_response {
 #[macro_export]
 macro_rules! receive_response {
     ($rx: ident, $response: ident, $reply: ident) => {
-        tracing::info!("receiving response");
+        tracing::trace!("receiving response");
         // let $response = run_async_blocking($rx.recv());
 
         let sync_code = std::thread::spawn(move || $rx.blocking_recv());
         let $response = sync_code.join().unwrap();
-        tracing::info!("received response");
+        tracing::trace!("received response");
         // $rx.close();
         // tracing::info!("closed receiver");
 
@@ -41,7 +41,7 @@ macro_rules! receive_response {
 #[macro_export]
 macro_rules! send_request {
     ($tx: expr, $data:ident, $reply: ident) => {
-        tracing::info!("sending request");
+        tracing::trace!("sending request");
         {
             let sender = $tx.clone();
             let send_res = std::thread::spawn(move || sender.blocking_send($data));
@@ -53,6 +53,6 @@ macro_rules! send_request {
                 "Failed to send ProviderRequest",
             );
         }
-        tracing::info!("sent request");
+        tracing::trace!("sent request");
     };
 }

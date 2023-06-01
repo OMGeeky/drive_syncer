@@ -41,10 +41,9 @@ impl ChangeType {
 
 #[derive(Debug)]
 pub struct Change {
-    pub drive_id: DriveId,
+    pub id: DriveId,
     pub kind: ChangeType,
     pub time: DateTime<Utc>,
-    pub removed: bool,
 }
 
 impl TryFrom<DriveChange> for Change {
@@ -52,13 +51,9 @@ impl TryFrom<DriveChange> for Change {
     #[instrument]
     fn try_from(drive_change: DriveChange) -> anyhow::Result<Self> {
         let removed = drive_change.removed.unwrap_or(false);
-        let drive_id = drive_change.file_id.context("drive_id is missing");
-        if let Err(e) = drive_id {
-            error!("drive_id is missing: {:?}", e);
-            return Err(anyhow!("drive_id is missing: {:?}", e));
-        }
+        let drive_id = drive_change.file_id.context("file_id is missing")?;
         Ok(Self {
-            drive_id: DriveId::from(drive_id?),
+            id: DriveId::from(drive_id),
             kind: ChangeType::from_drive_change(
                 drive_change.change_type,
                 drive_change.file,
@@ -66,7 +61,6 @@ impl TryFrom<DriveChange> for Change {
                 removed,
             )?,
             time: drive_change.time.context("time is missing")?,
-            removed,
         })
     }
 }

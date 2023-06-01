@@ -1,35 +1,37 @@
-use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
-use std::fmt::{Debug, Formatter};
-use std::fs::Permissions;
-use std::io::SeekFrom;
-use std::os::unix::prelude::{MetadataExt, PermissionsExt};
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use anyhow::{anyhow, Context, Error};
-use fuser::{FileAttr, FileType};
-use libc::c_int;
-use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
-use tokio::time::sleep;
-use tokio::{fs, join};
-use tracing::{debug, error, info, instrument, trace, warn};
-
-use crate::fs::drive2::HandleFlags;
-use crate::fs::drive_file_provider::{
-    FileMetadata, ProviderLookupRequest, ProviderMetadataRequest, ProviderOpenFileRequest,
-    ProviderReadContentRequest, ProviderReadDirRequest, ProviderReadDirResponse,
-    ProviderReleaseFileRequest, ProviderRequest, ProviderRequestStruct, ProviderResponse,
-    ProviderSetAttrRequest, ProviderWriteContentRequest,
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Formatter},
+    io::SeekFrom,
+    os::unix::prelude::MetadataExt,
+    path::PathBuf,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use crate::google_drive::{DriveId, GoogleDrive};
-use crate::prelude::*;
-use crate::{send_error_response, send_response};
+
+use anyhow::{anyhow, Context};
+use fuser::{FileAttr, FileType};
+use google_drive3::api::StartPageToken;
+use tokio::{
+    fs,
+    fs::{File, OpenOptions},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    sync::mpsc::{Receiver, Sender},
+    task::JoinHandle,
+};
+use tracing::{debug, error, instrument, trace, warn};
+
+use crate::{
+    fs::drive::{Change, ChangeType},
+    fs::drive2::HandleFlags,
+    fs::drive_file_provider::{
+        FileMetadata, ProviderLookupRequest, ProviderMetadataRequest, ProviderOpenFileRequest,
+        ProviderReadContentRequest, ProviderReadDirRequest, ProviderReadDirResponse,
+        ProviderReleaseFileRequest, ProviderRequest, ProviderResponse, ProviderSetAttrRequest,
+        ProviderWriteContentRequest,
+    },
+    google_drive::{DriveId, GoogleDrive},
+    prelude::*,
+    send_error_response, send_response,
+};
 
 #[derive(Debug)]
 pub enum ProviderCommand {
@@ -80,6 +82,10 @@ pub struct DriveFileProvider {
 
     file_handles: HashMap<u64, FileHandleData>,
     next_fh: u64,
+
+    changes_start_token: StartPageToken,
+    last_checked_for_changes: SystemTime,
+    allowed_cache_time: Duration,
 }
 impl Debug for DriveFileProvider {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -100,6 +106,7 @@ impl DriveFileProvider {
         drive: GoogleDrive,
         cache_dir: PathBuf,
         perma_dir: PathBuf,
+        changes_start_token: StartPageToken,
         // file_request_receiver: std::sync::mpsc::Receiver<ProviderRequest>,
     ) -> Self {
         Self {
@@ -114,6 +121,10 @@ impl DriveFileProvider {
             children: HashMap::new(),
             file_handles: HashMap::new(),
             next_fh: 111,
+
+            changes_start_token,
+            last_checked_for_changes: SystemTime::UNIX_EPOCH,
+            allowed_cache_time: Duration::from_secs(10),
         }
     }
     fn add_parent_child_relation(&mut self, parent_id: DriveId, child_id: DriveId) {
@@ -172,10 +183,7 @@ impl DriveFileProvider {
         // //TODO: implement waiting for the stop signal instead of just waiting for 10 days
     }
     #[instrument(skip(self, rx))]
-    pub async fn listen_for_file_requests(
-        &mut self,
-        rx: tokio::sync::mpsc::Receiver<ProviderRequest>,
-    ) {
+    pub async fn listen_for_file_requests(&mut self, rx: Receiver<ProviderRequest>) {
         debug!("initializing entries");
         let init_res = self.initialize_entries().await;
         if let Err(e) = init_res {
@@ -186,6 +194,7 @@ impl DriveFileProvider {
         let mut rx = rx;
         while let Some(file_request) = rx.recv().await {
             debug!("got file request: {:?}", file_request);
+            self.check_and_apply_changes().await;
             let result = match file_request {
                 ProviderRequest::OpenFile(r) => self.open_file(r).await,
                 ProviderRequest::ReleaseFile(r) => self.release_file(r).await,
@@ -196,7 +205,10 @@ impl DriveFileProvider {
                 ProviderRequest::Lookup(r) => self.lookup(r).await,
                 ProviderRequest::SetAttr(r) => self.set_attr(r).await,
                 _ => {
-                    error!("DriveFileProvider::listen_for_file_requests() received unknown request: {:?}", file_request);
+                    error!(
+                    "DriveFileProvider::listen_for_file_requests() received unknown request: {:?}",
+                    file_request
+                );
                     todo!("handle this unknown request")
                 }
             };
@@ -206,6 +218,18 @@ impl DriveFileProvider {
             debug!("processed file request, waiting for more...");
         }
         debug!("Received None from file request receiver, that means all senders have been dropped. Ending listener");
+    }
+
+    async fn check_and_apply_changes(&mut self) {
+        let changes = self.get_changes().await;
+        if let Ok(changes) = changes {
+            for change in changes {
+                let change_applied_successful = self.process_change(change);
+                if let Err(e) = change_applied_successful {
+                    error!("got an error while applying change: {:?}", e);
+                }
+            }
+        }
     }
     //endregion
 
@@ -239,7 +263,7 @@ impl DriveFileProvider {
                 }
             }
         }
-        info!("could not find file: {} in {}", name, parent_id);
+        debug!("could not find file: {} in {}", name, parent_id);
         let response = ProviderResponse::Lookup(None);
         return send_response!(request, response);
     }
@@ -327,11 +351,11 @@ impl DriveFileProvider {
         if let Err(e) = wait_res {
             return send_error_response!(request, e, libc::EIO);
         }
-        let entry = self.entries.get(file_id).context("could not get entry");
-        if let Err(e) = entry {
-            return send_error_response!(request, e, libc::EIO);
-        }
-        let entry = entry.unwrap();
+        // let entry = self.entries.get(file_id).context("could not get entry");
+        // if let Err(e) = entry {
+        //     return send_error_response!(request, e, libc::EIO);
+        // }
+        // let entry = entry.unwrap();
         let file_handle = self
             .file_handles
             .remove(&request.fh)
@@ -489,7 +513,7 @@ impl DriveFileProvider {
         }
         if !was_applied {
             let target_path = self.construct_path(&file_id)?;
-            fs::OpenOptions::new()
+            OpenOptions::new()
                 .write(true)
                 .open(target_path)
                 .await
@@ -570,9 +594,9 @@ impl DriveFileProvider {
             let opened_file = opened_file.unwrap();
             file_handle.file = Some(opened_file);
             file_handle.marked_for_open = false;
-        } else {
-            error!("File handle does not have a file");
-            return Err(anyhow!("File handle does not have a file"));
+            // } else {
+            //     error!("File handle does not have a file");
+            //     return Err(anyhow!("File handle does not have a file"));
         }
         Ok(file_handle)
     }
@@ -592,7 +616,7 @@ impl DriveFileProvider {
             "writing to file at local path: {}",
             file_handle.path.display()
         );
-        let file: &mut tokio::fs::File = file;
+        let file: &mut File = file;
         trace!("seeking position: {}", request.offset);
         file.seek(SeekFrom::Start(request.offset)).await?;
         trace!("writing data: {:?}", request.data);
@@ -642,7 +666,7 @@ impl DriveFileProvider {
         trace!("reading to buffer: size: {}", request.size);
         let size_read = file.read(&mut buf).await?;
         if size_read != request.size {
-            warn!(
+            debug!(
                 "did not read the targeted size: target size: {}, actual size: {}",
                 request.size, size_read
             );
@@ -670,6 +694,28 @@ impl DriveFileProvider {
     //endregion
 
     //region drive helpers
+    #[instrument]
+    async fn get_changes(&mut self) -> Result<Vec<Change>> {
+        if self.last_checked_for_changes + self.allowed_cache_time > SystemTime::now() {
+            debug!("not checking for changes since we already checked recently");
+            return Ok(vec![]);
+        }
+        debug!("checking for changes...");
+        let changes: Result<Vec<Change>> = self
+            .drive
+            .get_changes_since(&mut self.changes_start_token)
+            .await?
+            .into_iter()
+            .map(Change::try_from)
+            .collect();
+
+        self.last_checked_for_changes = SystemTime::now();
+        debug!(
+            "checked for changes, found {} changes",
+            changes.as_ref().unwrap_or(&Vec::<Change>::new()).len()
+        );
+        changes
+    }
 
     /// starts a download of the specified file and puts it in the running_requests map
     ///
@@ -793,7 +839,7 @@ impl DriveFileProvider {
                 let id = DriveId::from(id);
                 let attr = self.create_file_attr_from_metadata(&entry);
                 if attr.is_err() {
-                    error!(
+                    warn!(
                         "error while creating FileAttr from metadata: {:?} entry: {:?}",
                         attr, entry
                     );
@@ -822,9 +868,9 @@ impl DriveFileProvider {
                 self.entries.insert(id, entry_data);
             }
         }
-        for (i, (id, data)) in self.entries.iter().enumerate() {
-            println!("entry {:3} id: {:>40} data: {:?}", i, id, data);
-        }
+        // for (i, (id, data)) in self.entries.iter().enumerate() {
+        //     info!("entry {:3} id: {:>40} data: {:?}", i, id, data);
+        // }
         Ok(())
     }
     fn create_file_attr_from_metadata(&self, metadata: &DriveFileMetadata) -> Result<FileAttr> {
@@ -890,6 +936,64 @@ impl DriveFileProvider {
         }
         return id;
     }
+    fn process_change(&mut self, change: Change) -> Result<()> {
+        let id = change.id;
+        let id = self.get_correct_id(id);
+
+        let entry = self.entries.get_mut(&id);
+        if let Some(entry) = entry {
+            match change.kind {
+                ChangeType::Drive(drive) => {
+                    todo!("drive changes are not supported yet: {:?}", drive);
+                }
+                ChangeType::File(file_change) => {
+                    //TODO: check if local has changes that conflict (content)
+                    //TODO: check if the content was changed (checksum) and schedule
+                    // a download if it is a local/perm file or mark it for download on next open
+                    process_file_change(entry, file_change)?;
+                }
+                ChangeType::Removed => {
+                    todo!("remove local file/dir since it was deleted on the remote");
+                }
+            }
+            return Ok(());
+        } else {
+            todo!("there was a file/dir added on the remote since this ID is unknown")
+        }
+    }
+}
+#[instrument]
+fn process_file_change(entry: &mut FileData, change: DriveFileMetadata) -> Result<()> {
+    if let Some(size) = change.size {
+        entry.metadata.size = Some(size);
+        entry.attr.size = size as u64;
+        //TODO1: set the size of the cached file if necessary
+    }
+    if let Some(name) = change.name {
+        entry.metadata.name = Some(name);
+    }
+    if let Some(parents) = change.parents {
+        if Some(&parents) != entry.metadata.parents.as_ref() {
+            //TODO1: change the parent child relations
+            warn!(
+                "parents changed from {:?}: {:?}",
+                entry.metadata.parents,
+                Some(parents)
+            )
+        }
+    }
+    if let Some(description) = change.description {
+        entry.metadata.description = Some(description);
+    }
+    if let Some(thumbnail_link) = change.thumbnail_link {
+        entry.metadata.thumbnail_link = Some(thumbnail_link);
+    }
+    warn!("not all changes have been implemented");
+    //TODO2: implement all other needed changes!
+    // if let Some() = change.{
+    //      entry.metadata. = ;
+    // }
+    Ok(())
 }
 
 fn remove_volatile_metadata(metadata: DriveFileMetadata) -> DriveFileMetadata {

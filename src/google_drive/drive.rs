@@ -89,8 +89,8 @@ impl GoogleDrive {
                 .param(
                     "fields",
                     &format!(
-                        "changes({}, changeType, removed, fileId, \
-                driveId, drive, time), newStartPageToken, nextPageToken",
+                        "changes({}, changeType, removed, fileId, driveId, drive, time),\
+                         newStartPageToken, nextPageToken",
                         file_spec
                     ),
                 );
@@ -344,8 +344,7 @@ async fn download_file_by_id(
         .param("alt", "media")
         .doit()
         .await?;
-    //TODO: bigger files don't get downloaded. it just starts and then hangs at ~1.3MB forever
-    //  => check if this still happens
+
     debug!("download_file_by_id(): response: {:?}", response);
     debug!("download_file_by_id(): content: {:?}", content);
     write_body_to_file(response, target_path).await?;

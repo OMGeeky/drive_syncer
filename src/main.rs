@@ -1,7 +1,3 @@
-// use tokio::io::AsyncReadExt;
-// use tracing::instrument::WithSubscriber;
-use tracing::span;
-
 #[tokio::main]
 async fn main() {
     // drive_syncer::init_logger();
@@ -15,7 +11,8 @@ async fn main() {
     // drive_syncer::sample_fs().await.unwrap();
 
     // drive_syncer::sample_drive_fs().await.unwrap();
-    drive_syncer::sample_drive2_fs().await.unwrap();
+    // drive_syncer::sample_drive2_fs().await.unwrap();
+    drive_syncer::sample_drive2().await.unwrap();
 }
 
 fn init_tracing() {
@@ -45,7 +42,7 @@ async fn sample_logging() {
     use tracing::{debug, error, info, trace, warn};
     info!("info");
     debug!("debug");
-    let s = span!(
+    let s = tracing::span!(
         tracing::Level::TRACE,
         "span around trace and warn with stdin read"
     );

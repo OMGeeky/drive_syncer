@@ -517,12 +517,12 @@ impl DriveFilesystem {
                 ChangeType::Drive(drive) => {
                     warn!("im not sure how to handle drive changes: {:?}", drive);
 
-                    updated_entries.push(change.drive_id);
+                    updated_entries.push(change.id);
                     continue;
                 }
                 ChangeType::File(file) => {
                     debug!("file change: {:?}", file);
-                    let drive_id = &change.drive_id;
+                    let drive_id = &change.id;
 
                     let entry = self.entries.get_mut(drive_id);
                     if let Some(entry) = entry {
@@ -533,20 +533,20 @@ impl DriveFilesystem {
                         let change_successful = Self::update_entry_metadata(file, entry);
                         if let Err(e) = change_successful {
                             warn!("got an err while update entry metadata: {}", e);
-                            updated_entries.push(change.drive_id);
+                            updated_entries.push(change.id);
                             continue;
                         }
                     }
 
-                    updated_entries.push(change.drive_id);
+                    updated_entries.push(change.id);
                     debug!("processed change");
                     continue;
                 }
                 ChangeType::Removed => {
                     debug!("removing entry: {:?}", change);
                     //TODO: actually delete the entry
-                    self.remove_entry(&change.drive_id)?;
-                    updated_entries.push(change.drive_id);
+                    self.remove_entry(&change.id)?;
+                    updated_entries.push(change.id);
                     continue;
                 }
             }

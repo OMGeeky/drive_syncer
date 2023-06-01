@@ -1,7 +1,10 @@
-use std::collections::HashMap;
-use std::ffi::OsStr;
-use std::fmt::{Display, Formatter};
-use std::time::{Duration, SystemTime};
+use std::{
+    collections::HashMap,
+    ffi::OsStr,
+    fmt::{Display, Formatter},
+    sync::mpsc::{channel, Receiver, Sender},
+    time::{Duration, SystemTime},
+};
 
 use anyhow::{anyhow, Context};
 use bimap::BiMap;
@@ -10,10 +13,8 @@ use fuser::{
     ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::c_int;
-use std::sync::mpsc::{channel, Receiver, Sender};
 use tokio::fs::File;
-use tracing::field::debug;
-use tracing::{debug, error, instrument, trace};
+use tracing::{debug, error, field::debug, instrument, trace};
 
 pub use handle_flags::HandleFlags;
 

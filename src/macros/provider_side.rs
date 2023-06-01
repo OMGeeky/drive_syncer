@@ -22,13 +22,13 @@ macro_rules! send_response {
     };
 
     ($request:ident, $response:expr) => {{
-        tracing::info!("sending response");
+        tracing::trace!("sending response");
         let result_send_response = $request.response_sender.send($response).await;
         if let Err(e) = result_send_response {
             error!("Failed to send result response: {:?}", e);
             return Err(anyhow!("Failed to send result response: {:?}", e));
         }
-        tracing::info!("sent response");
+        tracing::trace!("sent response");
         Ok(())
     }};
 }

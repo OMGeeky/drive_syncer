@@ -1,27 +1,27 @@
-#![allow(dead_code, unused)]
-
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
-use std::time::Duration;
+// #![allow(dead_code, unused)]
 
 use fuser::{MountOption, Session, SessionUnmounter};
-// use nix;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tempfile::TempDir;
-// use tokio::io::{AsyncReadExt, stdin};
-// use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::{channel, Sender};
-use tokio::task::JoinHandle;
-use tracing::field::debug;
-use tracing::{debug, info};
+use tokio::{
+    select,
+    sync::mpsc::{channel, Receiver, Sender},
+    task::JoinHandle,
+};
+use tracing::{debug, error, info};
 
 use prelude::*;
 
-use crate::config::common_file_filter::CommonFileFilter;
-use crate::fs::drive::{DriveFileUploader, DriveFilesystem, FileUploaderCommand, SyncSettings};
-use crate::fs::drive_file_provider::{ProviderCommand, ProviderRequest};
-use crate::fs::{drive2, drive_file_provider};
-use crate::google_drive::GoogleDrive;
+use crate::{
+    config::common_file_filter::CommonFileFilter,
+    fs::drive::{DriveFileUploader, DriveFilesystem, FileUploaderCommand, SyncSettings},
+    fs::drive_file_provider::{ProviderCommand, ProviderRequest},
+    fs::{drive2, drive_file_provider},
+    google_drive::GoogleDrive,
+};
 
 pub mod async_helper;
 pub mod common;
@@ -30,14 +30,107 @@ pub mod fs;
 pub mod google_drive;
 mod macros;
 pub mod prelude;
+//region drive2 full example
+pub async fn sample_drive2() -> Result<()> {
+    let mountpoint = Path::new("/tmp/fuse/3");
+    let perma_dir = Path::new("/tmp/fuse/2");
+    let cache_dir = get_cache_dir()?;
 
+    let (provider_command_tx, provider_command_rx) = channel(1);
+    let (provider_request_tx, provider_request_rx) = channel(1);
+
+    let (filesystem_handle, unmount_callable) =
+        filesystem_thread_starter(provider_request_tx, mountpoint).await?;
+    let provider_handle = provider_thread_starter(
+        provider_command_rx,
+        provider_request_rx,
+        unmount_callable,
+        cache_dir.path(),
+        perma_dir,
+    )
+    .await?;
+
+    let program_end_handle = ctrl_c_thread_starter().await?;
+    select! {
+        _= filesystem_handle => {
+            info!("filesystem thread finished first!");
+            let x = provider_command_tx.send(ProviderCommand::Stop).await;
+            info!("send stop to provider: {:?}", x);
+        },
+        _= program_end_handle => {
+            info!("filesystem thread finished first!");
+            let x = provider_command_tx.send(ProviderCommand::Stop).await;
+            info!("send stop to provider: {:?}", x);
+        },
+    }
+    provider_handle.await?;
+
+    Ok(())
+}
+
+async fn filesystem_thread_starter(
+    provider_request_tx: Sender<ProviderRequest>,
+    mountpoint: impl Into<&Path>,
+) -> Result<(JoinHandle<()>, SessionUnmounter)> {
+    let filesystem = drive2::DriveFilesystem::new(provider_request_tx);
+    let mount_options = vec![
+        MountOption::RW, /*TODO: make a start parameter that can change the mount to read only*/
+    ];
+    let mut mount = Session::new(filesystem, mountpoint.into(), &mount_options)?;
+    let session_unmounter = mount.unmount_callable();
+    let join_handle = tokio::spawn(async move {
+        let mount_res = mount.run();
+        debug!("mount finished with result: {:?}", mount_res);
+        if let Err(e) = mount_res {
+            error!("mount finished with error: {:?}", e);
+        }
+    });
+    Ok((join_handle, session_unmounter))
+}
+
+async fn provider_thread_starter(
+    provider_command_rx: Receiver<ProviderCommand>,
+    provider_request_rx: Receiver<ProviderRequest>,
+    mut unmount_callable: SessionUnmounter,
+    cache_dir: &Path,
+    perma_dir: &Path,
+) -> Result<JoinHandle<()>> {
+    let drive = GoogleDrive::new().await?;
+
+    let changes_start_token = drive
+        .get_start_page_token()
+        .await
+        .expect("could not initialize the changes api start page token");
+    let mut provider = drive_file_provider::DriveFileProvider::new(
+        drive,
+        cache_dir.to_path_buf(),
+        perma_dir.to_path_buf(),
+        changes_start_token,
+    );
+
+    Ok(tokio::spawn(async move {
+        provider
+            .listen(provider_request_rx, provider_command_rx)
+            .await;
+        unmount_callable.unmount().expect("failed to unmount");
+    }))
+}
+async fn ctrl_c_thread_starter() -> Result<JoinHandle<()>> {
+    Ok(tokio::spawn(async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for ctrl_c event");
+
+        info!("got signal to end program");
+    }))
+}
+//endregion
+
+//region old examples
 pub async fn sample_drive2_fs() -> Result<()> {
     // let mountpoint = "/tmp/fuse/3";
     let mountpoint = Path::new("/tmp/fuse/3");
     let perma_dir = "/tmp/fuse/2";
-    use crate::fs::drive2;
-    use crate::fs::drive_file_provider;
-    use std::sync::mpsc::channel;
 
     let cache_dir = get_cache_dir()?;
 
@@ -48,12 +141,13 @@ pub async fn sample_drive2_fs() -> Result<()> {
         debug!("entry: {:?}", entry);
     }
     debug!("test!");
-    let (provider_tx, provider_rx) = tokio::sync::mpsc::channel(1);
+    let (provider_tx, provider_rx) = channel(1);
     let filesystem = drive2::DriveFilesystem::new(provider_tx);
     let mount_options = vec![MountOption::RW];
-    let mut mount = fuser::Session::new(filesystem, &mountpoint, &mount_options)?;
-    let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
+    let mut mount = Session::new(filesystem, &mountpoint, &mount_options)?;
+    let mut session_unmounter = mount.unmount_callable();
 
+    let (command_tx, command_rx) = channel(1);
     let provider_join_handle: JoinHandle<()> = tokio::spawn(drive2_provider(
         drive,
         cache_dir.path().to_path_buf(),
@@ -61,9 +155,8 @@ pub async fn sample_drive2_fs() -> Result<()> {
         provider_rx,
         command_rx,
     ));
-    let mut session_unmounter = mount.unmount_callable();
     debug!("running mount and listener");
-    tokio::select!(
+    select!(
         _= async move {mount.run()} => {
             debug!("mount.run finished first!");
             let _ = command_tx.send(ProviderCommand::Stop);
@@ -88,7 +181,7 @@ pub async fn sample_drive_fs() -> Result<()> {
     // let source = "/tmp/fuse/2";
     let drive = GoogleDrive::new().await?;
     // let file_uploader = FileUploader::new("config/credentials.json", "config/token.json");
-    let (file_uploader_sender, file_uploader_receiver) = mpsc::channel(1);
+    let (file_uploader_sender, file_uploader_receiver) = channel(1);
     let mut file_uploader = DriveFileUploader::new(
         drive.clone(),
         upload_ignore,
@@ -168,13 +261,23 @@ async fn drive2_provider(
     drive: GoogleDrive,
     cache_dir: PathBuf,
     perma_dir: PathBuf,
-    provider_rx: tokio::sync::mpsc::Receiver<ProviderRequest>,
-    command_rx: tokio::sync::mpsc::Receiver<ProviderCommand>,
+    provider_rx: Receiver<ProviderRequest>,
+    command_rx: Receiver<ProviderCommand>,
 ) {
-    use std::sync::mpsc::channel;
-    let mut provider = drive_file_provider::DriveFileProvider::new(drive, cache_dir, perma_dir);
+    let changes_start_token = drive
+        .get_start_page_token()
+        .await
+        .expect("could not initialize the changes api start page token");
+    let mut provider = drive_file_provider::DriveFileProvider::new(
+        drive,
+        cache_dir,
+        perma_dir,
+        changes_start_token,
+    );
     provider.listen(provider_rx, command_rx).await;
 }
+//endregion
+
 #[cfg(test)]
 pub mod tests {
     pub fn init_logs() {
