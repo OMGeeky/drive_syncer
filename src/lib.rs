@@ -64,7 +64,7 @@ pub async fn sample_drive2() -> Result<()> {
         },
     }
     provider_handle.await?;
-
+    info!("everything finished! Exiting...");
     Ok(())
 }
 

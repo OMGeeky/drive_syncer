@@ -13,7 +13,7 @@
 ### Prio 1:
 - start parameters
 - settings
-- implement the changes api to check for changes when accessing files
+- fully implement the changes api to check for changes when accessing files
 - file operations:
   - create
   - delete
