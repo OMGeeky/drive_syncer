@@ -1,7 +1,7 @@
 # TODOs
 
 ### Priorities:
-- critical: this is critical and needs to be fixed asap as it creates extreme problems like crashes or data loss regularly
+- critical: this is critical and needs to be fixed asap as it creates extreme problems like crashes, build errors or data loss regularly
 - 1: this is needed before it can be released
 - 2: this is important but not critical/not necessary for a release
 - 3: nice to have
@@ -18,19 +18,27 @@
   - create
   - delete
   - move/rename
+- implement notifying the user of needed actions like conflicts or required authentications via the cli 
 
 ### Prio 2:
 - use the directories crate to get locations where to store configs, cached files etc
-- implement notifying the user of needed actions like conflicts or required authentications via the [notify-rust](https://docs.rs/notify-rust/latest/notify_rust/#example-3-ask-the-user-to-do-something) crate
-  - maybe also let the user decide if he wants notifications like this or just wants to stay in the CLI (start param?)
+- up-/download ignore files
+- offline files list (gitignore style?)
+- cli way of adding/removing ignores and offline files
+- support for multiple drives (maybe by running naming each drive, then the user can run two terminals with each drive if needed?)
 
 
 ### Prio 3:
 
-
-
-
-
+- maybe also let the user decide if he wants notifications via the [notify-rust](https://docs.rs/notify-rust/latest/notify_rust/#example-3-ask-the-user-to-do-something) crate as a gui notification or 
+  just wants to stay in the CLI (start param?)
+- gui way of adding/removing ignores and offline files
+- maybe global and drive specific settings and ignores (per user and per drive)
+  - like a setting for all drives and a setting for each drive that is connected
+- make all permissions for Google-Drive optional on each request (maybe except the one that is currently needed for that action)
+  - like how you can choose to not give it write permissions but if you want to, 
+    you could, without the client to have to send another request, requesting write permissions
+  - should be some checkboxes or something, but idk if yup supports that
 
 
 
