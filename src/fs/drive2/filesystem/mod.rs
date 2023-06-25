@@ -436,7 +436,7 @@ impl Filesystem for DriveFilesystem {
         mut reply: ReplyDirectory,
     ) {
         let (provider_res_tx, mut provider_rx) = tokio::sync::mpsc::channel(1);
-        let drive_id = self.entry_ids.get_by_left(&ino);
+        let drive_id = self.get_id_from_ino(ino);
         reply_error_o!(
             drive_id,
             reply,
@@ -474,7 +474,6 @@ impl Filesystem for DriveFilesystem {
             }
             debug!("sending ok");
             reply.ok();
-            return;
         });
     }
 
