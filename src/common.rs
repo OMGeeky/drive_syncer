@@ -86,3 +86,35 @@ impl<'a> From<&'a LocalPath> for &'a PathBuf {
     }
 }
 //endregion
+
+//region VecExtensions
+
+pub trait VecExtension<T> {
+    fn remove_first_element(&mut self, target: &T) -> Option<T>;
+}
+
+impl<T> VecExtension<T> for Vec<T>
+where
+    T: Eq,
+{
+    fn remove_first_element(&mut self, target: &T) -> Option<T> {
+        self.iter()
+            .position(|x| x == target)
+            .map(|x| self.remove(x))
+    }
+}
+
+#[cfg(test)]
+mod vec_extension_tests {
+    use super::VecExtension;
+
+    #[test]
+    fn test_remove_first_element() {
+        let mut ve = vec![10, 20, 30, 40];
+        let r = ve.remove_first_element(&20);
+        assert_eq!(r, Some(20));
+        assert_eq!(ve, vec![10, 30, 40])
+    }
+}
+
+//endregion
