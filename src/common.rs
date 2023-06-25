@@ -1,7 +1,9 @@
 use std::ffi::{OsStr, OsString};
+use std::fmt::Debug;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
+//region LocalPath
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct LocalPath(PathBuf);
 
@@ -54,32 +56,33 @@ impl Deref for LocalPath {
 }
 //------------------------------------------
 
-impl Into<PathBuf> for LocalPath {
-    fn into(self) -> PathBuf {
-        self.0
+impl From<LocalPath> for PathBuf {
+    fn from(value: LocalPath) -> Self {
+        value.0
     }
 }
 
-impl Into<OsString> for LocalPath {
-    fn into(self) -> OsString {
-        self.0.into_os_string()
+impl From<LocalPath> for OsString {
+    fn from(value: LocalPath) -> Self {
+        value.0.into_os_string()
     }
 }
 
-impl<'a> Into<&'a Path> for &'a LocalPath {
-    fn into(self) -> &'a Path {
-        &self.0
+impl<'a> From<&'a LocalPath> for &'a Path {
+    fn from(value: &'a LocalPath) -> Self {
+        &value.0
     }
 }
 
-impl<'a> Into<&'a OsStr> for &'a LocalPath {
-    fn into(self) -> &'a OsStr {
-        self.0.as_os_str()
+impl<'a> From<&'a LocalPath> for &'a OsStr {
+    fn from(value: &'a LocalPath) -> Self {
+        value.0.as_os_str()
     }
 }
 
-impl<'a> Into<&'a PathBuf> for &'a LocalPath {
-    fn into(self) -> &'a PathBuf {
-        &self.0
+impl<'a> From<&'a LocalPath> for &'a PathBuf {
+    fn from(value: &'a LocalPath) -> Self {
+        &value.0
     }
 }
+//endregion
