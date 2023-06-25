@@ -4,7 +4,7 @@ macro_rules! match_provider_response {
         match $response {
             $target => $target_body,
             ProviderResponse::Error(e, code) => {
-                error!("received ProviderResponse::Error: {}", e);
+                error!("received ProviderResponse::Error: ({}) {}", code, e);
                 $reply.error(code);
                 return;
             }
