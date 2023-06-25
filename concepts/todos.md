@@ -18,6 +18,12 @@
   - create
   - delete
   - move/rename
+    - works for inside the mount
+    - needs work for moving out of/into mount folder
+      - it just can't find the target folder if I try to move a file out of the drive
+      - same for moving into the drive folder
+      - basically files have to be created/deleted on the drive if files are moved into/out of the drive folder
+        - in that case the data also has to be moved over to the target location (actual move, not just a parent id change)
 - implement notifying the user of needed actions like conflicts or required authentications via the cli 
 
 ### Prio 2:
