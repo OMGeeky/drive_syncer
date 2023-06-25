@@ -1,3 +1,4 @@
+use std::mem::swap;
 use std::{
     collections::HashMap,
     fmt::{Debug, Formatter},
@@ -63,7 +64,7 @@ pub struct FileData {
 }
 impl FileData {
     fn get_id(&self) -> Option<DriveId> {
-        self.metadata.id.map(|x| DriveId::from(x))
+        self.metadata.id.as_ref().map(DriveId::from)
     }
 }
 
@@ -562,6 +563,7 @@ impl DriveFileProvider {
     //endregion
     //region rename
 
+    #[instrument(skip(request))]
     async fn rename(&mut self, request: ProviderRenameRequest) -> Result<()> {
         let original_parent = self.get_correct_id(request.original_parent.clone());
         let original_name = request.original_name.into_string();
@@ -594,6 +596,7 @@ impl DriveFileProvider {
         send_response!(request, ProviderResponse::Rename)
     }
 
+    #[instrument(skip(self))]
     async fn rename_inner(
         &mut self,
         original_parent: &DriveId,
@@ -617,15 +620,21 @@ impl DriveFileProvider {
             .wait_for_running_drive_request_if_exists(&file_id)
             .await;
         if let Err(e) = wait_res {
-            return Err((e.to_string(), libc::EIO));
+            let msg = e.to_string();
+            error!("{}", msg);
+            return Err((msg, libc::EIO));
         }
 
-        if self.check_id_exists(&new_parent) {
-            return Err((format!("Folder does not exist"), libc::ENOENT));
+        if !self.check_id_exists(new_parent) {
+            let msg = format!("Folder does not exist");
+            error!("{}", msg);
+            return Err((msg, libc::ENOENT));
         }
 
-        if self.does_target_name_exist_under_parent(&new_parent, &new_name) {
-            return Err((format!("Target name is already used"), libc::EADDRINUSE));
+        if self.does_target_name_exist_under_parent(new_parent, new_name) {
+            let msg = format!("Target name is already used");
+            error!("{}", msg);
+            return Err((msg, libc::EADDRINUSE));
         }
 
         let entry = self
@@ -634,6 +643,7 @@ impl DriveFileProvider {
             .expect("We checked shortly before if the entry exists");
 
         if original_name != new_name {
+            trace!("Updating name");
             //check if the filename has been changed and update it in the metadata and on google drive
             entry.changed_metadata.name = Some(new_name.clone());
         }
@@ -642,6 +652,7 @@ impl DriveFileProvider {
         entry.attr.mtime = now;
         //check if the path is changed (child-parent relationships) and modify them accordingly
         if original_parent != new_parent {
+            trace!("Updating child-parent relations");
             entry.changed_metadata.parents = Some(vec![new_parent.to_string()]);
             self.remove_parent_child_relation(original_parent.clone(), file_id.clone());
             self.add_parent_child_relation(new_parent.clone(), file_id.clone());
@@ -649,10 +660,9 @@ impl DriveFileProvider {
 
         let upload_result = self.update_remote_metadata(file_id).await;
         if let Err(e) = upload_result {
-            return Err((
-                format!("Error while uploading Metadata: {:?}", e),
-                libc::EREMOTEIO,
-            ));
+            let msg = format!("Error while uploading Metadata: {:?}", e);
+            error!("{}", msg);
+            return Err((msg, libc::EREMOTEIO));
         }
 
         Ok(())
@@ -682,11 +692,7 @@ impl DriveFileProvider {
     //endregion
     //region request helpers
 
-    fn does_target_name_exist_under_parent(
-        &self,
-        new_parent: &&DriveId,
-        new_name: &&String,
-    ) -> bool {
+    fn does_target_name_exist_under_parent(&self, new_parent: &DriveId, new_name: &String) -> bool {
         let new_file_entry = self.find_first_child_by_name(&new_name, &new_parent);
         return new_file_entry.is_some();
     }
@@ -867,17 +873,37 @@ impl DriveFileProvider {
         changes
     }
 
-    async fn update_remote_metadata(&self, id: DriveId) -> Result<()> {
-        let file_data = self.entries.get(&id);
+    #[instrument]
+    async fn update_remote_metadata(&mut self, id: DriveId) -> Result<()> {
+        trace!("Uploading changed metadata");
+        let mut file_data = self.entries.get_mut(&id);
         if file_data.is_none() {
             return Err(anyhow!("Could not get entry with id: {}", id));
         }
         let file_data = file_data.unwrap();
-        let mut metadata = file_data.changed_metadata.clone();
+        //extract changes from the file_data and replaces with new empty one
+        let mut metadata = DriveFileMetadata::default();
+        swap(&mut file_data.changed_metadata, &mut metadata);
         Self::prepare_changed_metadata_for_upload(&id, &mut metadata);
-        self.drive
-            .update_file_metadata_on_drive(metadata, &file_data.metadata);
 
+        self.drive
+            .update_file_metadata_on_drive(metadata, &file_data.metadata)
+            .await?;
+
+        self.reset_local_metadata_to_remote_version(&id).await?;
+
+        Ok(())
+    }
+
+    async fn reset_local_metadata_to_remote_version(&mut self, id: &DriveId) -> Result<()> {
+        let new_metadata = self.drive.get_metadata_for_file(id.clone()).await?;
+        let file_data = self.entries.get_mut(id);
+        if file_data.is_none() {
+            return Err(anyhow!("Could not get entry with id: {}", id));
+        }
+        let file_data = file_data.unwrap();
+        file_data.metadata = new_metadata;
+        file_data.changed_metadata = DriveFileMetadata::default();
         Ok(())
     }
 

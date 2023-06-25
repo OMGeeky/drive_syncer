@@ -520,7 +520,7 @@ impl Filesystem for DriveFilesystem {
 
         match_provider_response!(response, reply, ProviderResponse::Rename, {
             //
-            debug!("Sending Ok.")
+            debug!("Sending Ok.");
             reply.ok();
         });
     }

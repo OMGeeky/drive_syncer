@@ -30,6 +30,7 @@ pub mod fs;
 pub mod google_drive;
 mod macros;
 pub mod prelude;
+
 //region drive2 full example
 pub async fn sample_drive2() -> Result<()> {
     let mountpoint = Path::new("/tmp/fuse/3");

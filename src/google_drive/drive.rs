@@ -504,10 +504,14 @@ pub async fn update_file_metadata_on_drive(
 
     if has_parent_change {
         //remove old parents
-        original_file.parents.map(|x| call.remove_parents(x));
+        if let Some(existing_parents) = original_file.parents.as_ref() {
+            for x in existing_parents.iter() {
+                call = call.remove_parents(x);
+            }
+        }
         //add new parents
         for new_parent in parents {
-            call.add_parents(new_parent.as_str());
+            call = call.add_parents(new_parent.as_str());
         }
     }
 
