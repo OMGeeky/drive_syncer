@@ -27,7 +27,7 @@ pub struct GoogleDrive {
 
 impl GoogleDrive {
     #[instrument]
-    pub(crate) async fn list_all_files(&self) -> anyhow::Result<Vec<File>> {
+    pub(crate) async fn list_all_files(&self) -> Result<Vec<File>> {
         let mut files = Vec::new();
         let mut page_token: Option<String> = None;
         loop {
@@ -56,7 +56,7 @@ impl GoogleDrive {
 
 impl GoogleDrive {
     #[instrument]
-    pub(crate) async fn get_start_page_token(&self) -> anyhow::Result<StartPageToken> {
+    pub(crate) async fn get_start_page_token(&self) -> Result<StartPageToken> {
         let (_response, start_page_token) =
             self.hub.changes().get_start_page_token().doit().await?;
         Ok(start_page_token)
@@ -68,7 +68,7 @@ impl GoogleDrive {
     pub(crate) async fn get_changes_since(
         &self,
         start_page_token: &mut StartPageToken,
-    ) -> anyhow::Result<Vec<Change>> {
+    ) -> Result<Vec<Change>> {
         let mut changes = vec![];
         let mut page_token: Option<String> = None;
         loop {
@@ -122,7 +122,7 @@ impl GoogleDrive {
 
 impl GoogleDrive {
     #[instrument]
-    pub(crate) async fn get_metadata_for_file(&self, drive_id: DriveId) -> anyhow::Result<File> {
+    pub(crate) async fn get_metadata_for_file(&self, drive_id: DriveId) -> Result<File> {
         let drive_id = drive_id.to_string();
         let (_response, file) = self
             .hub
@@ -138,11 +138,7 @@ impl GoogleDrive {
 
 impl GoogleDrive {
     #[instrument(skip(file), fields(file_name = file.name, file_id = file.drive_id))]
-    pub async fn upload_file_content_from_path(
-        &self,
-        file: File,
-        path: &Path,
-    ) -> anyhow::Result<()> {
+    pub async fn upload_file_content_from_path(&self, file: File, path: &Path) -> Result<()> {
         update_file_content_on_drive_from_path(&self, file, path).await?;
         Ok(())
     }
@@ -231,8 +227,7 @@ impl GoogleDrive {
 impl GoogleDrive {
     #[instrument]
     pub(crate) async fn new() -> Result<Self> {
-        let auth =
-            google_drive3::oauth2::read_application_secret("auth/client_secret.json").await?;
+        let auth = oauth2::read_application_secret("auth/client_secret.json").await?;
 
         let auth = oauth2::InstalledFlowAuthenticator::builder(
             auth,
@@ -255,7 +250,7 @@ impl GoogleDrive {
         Ok(drive)
     }
     #[instrument]
-    pub async fn list_files(&self, folder_id: DriveId) -> anyhow::Result<Vec<File>> {
+    pub async fn list_files(&self, folder_id: DriveId) -> Result<Vec<File>> {
         debug!("list_files: folder_id: {:?}", folder_id);
         let folder_id: OsString = folder_id.into();
         let folder_id = match folder_id.into_string() {
@@ -317,7 +312,7 @@ pub async fn sample() -> Result<()> {
         .ok_or(anyhow!("hello_world.txt not found"))?;
     debug!("hello_world_file: id:{:?}", hello_world_file.id);
     let target_path = "/tmp/hello_world.txt";
-    let target_path = std::path::Path::new(target_path);
+    let target_path = Path::new(target_path);
     // download_file(&mut drive, hello_world_file, target_path).await?;
     debug!("target_path: {:?}", target_path);
     debug!("download_file_by_id");
@@ -335,7 +330,7 @@ async fn download_file_by_id(
     target_path: &Path,
 ) -> Result<File> {
     let id = id.into();
-    let (response, content): (Response<Body>, google_drive3::api::File) = hub
+    let (response, content): (Response<Body>, File) = hub
         .hub
         .files()
         .get(&id)
@@ -387,10 +382,7 @@ async fn get_file_header_by_id(hub: &GoogleDrive, id: &str) -> Result<File> {
     Ok(content)
 }
 
-async fn get_files_by_name(
-    drive: &GoogleDrive,
-    name: impl Into<String>,
-) -> Result<Vec<google_drive3::api::File>> {
+async fn get_files_by_name(drive: &GoogleDrive, name: impl Into<String>) -> Result<Vec<File>> {
     let name = name.into();
     if name.is_empty() {
         return Err(anyhow!("name cannot be empty"));
@@ -407,7 +399,7 @@ async fn get_files_by_name(
         .await?;
     debug!("get_files_by_name(): response: {:?}", response);
     debug!("get_files_by_name(): files: {:?}", files);
-    let files: Vec<google_drive3::api::File> = files.files.unwrap_or(vec![]);
+    let files: Vec<File> = files.files.unwrap_or(vec![]);
     Ok(files)
 }
 
@@ -422,7 +414,7 @@ async fn sample_list_files(drive: &GoogleDrive) -> Result<()> {
         .await?;
     debug!("hello_world_res: {:?}", hello_world_res);
     debug!("hello_world_list: {:?}", hello_world_list);
-    let files: Vec<google_drive3::api::File> = hello_world_list.files.unwrap_or(vec![]);
+    let files: Vec<File> = hello_world_list.files.unwrap_or(vec![]);
     debug!("hello_world_list amount of files: {}", files.len());
     for file in files {
         let name = file.name.unwrap_or("NO NAME".to_string());
@@ -452,10 +444,10 @@ pub async fn create_file_on_drive_from_path(
 
 pub async fn create_file_on_drive(
     drive: &GoogleDrive,
-    file: google_drive3::api::File,
+    file: File,
     mime_type: mime::Mime,
-    content: tokio::fs::File,
-) -> Result<google_drive3::api::File> {
+    content: fs::File,
+) -> Result<File> {
     let stream = content.into_std().await;
     let (response, file) = drive
         .hub
@@ -471,9 +463,9 @@ pub async fn create_file_on_drive(
 #[instrument(skip(file), fields(drive_id = file.drive_id))]
 pub async fn update_file_content_on_drive_from_path(
     drive: &GoogleDrive,
-    file: google_drive3::api::File,
+    file: File,
     source_path: &Path,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     debug!(
         "update_file_content_on_drive_from_path(): source_path: {:?}",
         source_path
@@ -496,7 +488,7 @@ async fn update_file_content_on_drive(
     drive: &GoogleDrive,
     mut file: File,
     content: fs::File,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let stream = content.into_std().await;
     let mime_type = helpers::get_mime_from_file_metadata(&file)?;
     let id = file
