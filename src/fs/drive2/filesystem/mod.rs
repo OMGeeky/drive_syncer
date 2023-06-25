@@ -21,7 +21,8 @@ pub use handle_flags::HandleFlags;
 use crate::fs::drive_file_provider::{
     ProviderLookupRequest, ProviderMetadataRequest, ProviderOpenFileRequest,
     ProviderReadContentRequest, ProviderReadDirRequest, ProviderReleaseFileRequest,
-    ProviderRequest, ProviderResponse, ProviderSetAttrRequest, ProviderWriteContentRequest,
+    ProviderRenameRequest, ProviderRequest, ProviderResponse, ProviderSetAttrRequest,
+    ProviderWriteContentRequest,
 };
 use crate::google_drive::DriveId;
 use crate::{
@@ -477,5 +478,52 @@ impl Filesystem for DriveFilesystem {
         });
     }
 
+    //endregion
+    //region rename
+    #[instrument(skip(_req, reply, _flags), fields(% self))]
+    fn rename(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        new_parent: u64,
+        new_name: &OsStr,
+        _flags: u32,
+        reply: ReplyEmpty,
+    ) {
+        let (provider_res_tx, mut provider_rx) = tokio::sync::mpsc::channel(1);
+        let parent_id = self.get_id_from_ino(parent);
+        reply_error_o!(
+            parent_id,
+            reply,
+            libc::ENOENT,
+            "Failed to find drive_id for ino: {}",
+            parent
+        );
+        let new_parent_id = self.get_id_from_ino(new_parent);
+        reply_error_o!(
+            new_parent_id,
+            reply,
+            libc::ENOENT,
+            "Failed to find drive_id for ino: {}",
+            new_parent
+        );
+
+        let v = ProviderRequest::Rename(ProviderRenameRequest::new(
+            name.to_os_string(),
+            parent_id.clone(),
+            new_name.to_os_string(),
+            new_parent_id.clone(),
+            provider_res_tx,
+        ));
+        send_request!(self.file_provider_sender, v, reply);
+        receive_response!(provider_rx, response, reply);
+
+        match_provider_response!(response, reply, ProviderResponse::Rename, {
+            //
+            debug!("Sending Ok.")
+            reply.ok();
+        });
+    }
     //endregion
 }

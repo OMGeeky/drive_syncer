@@ -21,6 +21,7 @@ pub enum ProviderResponse {
     Lookup(Option<FileMetadata>),
     ReadContent(Vec<u8>),
     ReadDir(ProviderReadDirResponse),
+    Rename,
     WriteSize(u32),
     // Ok,
     Error(Error, c_int),
@@ -36,6 +37,7 @@ pub enum ProviderRequest {
     SetAttr(ProviderSetAttrRequest),
     ReadContent(ProviderReadContentRequest),
     ReadDir(ProviderReadDirRequest),
+    Rename(ProviderRenameRequest),
     WriteContent(ProviderWriteContentRequest),
     Unknown,
 }
@@ -274,6 +276,34 @@ impl ProviderWriteContentRequest {
             offset,
             fh,
             data,
+            response_sender,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ProviderRenameRequest {
+    pub original_name: OsString,
+    pub original_parent: DriveId,
+    pub new_name: OsString,
+    pub new_parent: DriveId,
+
+    pub response_sender: Sender<ProviderResponse>,
+}
+
+impl ProviderRenameRequest {
+    pub(crate) fn new(
+        original_name: OsString,
+        original_parent: DriveId,
+        new_name: OsString,
+        new_parent: DriveId,
+        response_sender: Sender<ProviderResponse>,
+    ) -> Self {
+        Self {
+            original_name,
+            original_parent,
+            new_name,
+            new_parent,
             response_sender,
         }
     }

@@ -4,12 +4,14 @@ use std::{
     io::SeekFrom,
     os::unix::prelude::MetadataExt,
     path::PathBuf,
+    result::Result as StdResult,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Context};
 use fuser::{FileAttr, FileType};
 use google_drive3::api::StartPageToken;
+use libc::c_int;
 use tokio::{
     fs,
     fs::{File, OpenOptions},
@@ -20,8 +22,10 @@ use tokio::{
 use tracing::{debug, error, instrument, trace, warn};
 
 use crate::{
+    common::VecExtension,
     fs::drive::{Change, ChangeType},
     fs::drive2::HandleFlags,
+    fs::drive_file_provider::ProviderRenameRequest,
     fs::drive_file_provider::{
         FileMetadata, ProviderLookupRequest, ProviderMetadataRequest, ProviderOpenFileRequest,
         ProviderReadContentRequest, ProviderReadDirRequest, ProviderReadDirResponse,
@@ -56,6 +60,11 @@ pub struct FileData {
     pub perma: bool,
     pub attr: FileAttr,
     pub is_local: bool,
+}
+impl FileData {
+    fn get_id(&self) -> Option<DriveId> {
+        self.metadata.id.map(|x| DriveId::from(x))
+    }
 }
 
 #[derive(Debug)]
@@ -145,6 +154,21 @@ impl DriveFileProvider {
             self.children.insert(parent_id, vec![child_id]);
         }
     }
+
+    fn remove_parent_child_relation(&mut self, parent_id: DriveId, child_id: DriveId) {
+        trace!(
+            "removing child-parent relation for child: {:<50} and parent: {:<50}",
+            child_id,
+            parent_id
+        );
+        if let Some(parents) = self.parents.get_mut(&child_id) {
+            parents.remove_first_element(&parent_id);
+        }
+        if let Some(children) = self.children.get_mut(&parent_id) {
+            children.remove_first_element(&child_id);
+        }
+    }
+
     //region listeners
     #[instrument(skip(self, request_reciever, command_receiver))]
     pub async fn listen(
@@ -202,6 +226,7 @@ impl DriveFileProvider {
                 ProviderRequest::ReadContent(r) => self.read_content(r).await,
                 ProviderRequest::WriteContent(r) => self.write_content(r).await,
                 ProviderRequest::ReadDir(r) => self.read_dir(r).await,
+                ProviderRequest::Rename(r) => self.rename(r).await,
                 ProviderRequest::Lookup(r) => self.lookup(r).await,
                 ProviderRequest::SetAttr(r) => self.set_attr(r).await,
                 _ => {
@@ -244,29 +269,20 @@ impl DriveFileProvider {
         let name = name.unwrap();
         let parent_id = self.get_correct_id(request.parent);
         debug!("looking up {} under id {}", name, parent_id);
-        let children = self.children.get(&parent_id);
 
-        // let mut result = vec![];
-        for child in children.unwrap_or(&vec![]) {
-            if let Some(child) = self.entries.get(child) {
-                if child
-                    .metadata
-                    .name
-                    .as_ref()
-                    .unwrap_or(&"NO_NAME".to_string())
-                    .eq_ignore_ascii_case(&name)
-                {
-                    // let response = result.push(Self::create_file_metadata_from_entry(child));
-                    let result = Self::create_file_metadata_from_entry(child);
-                    let response = ProviderResponse::Lookup(Some(result));
-                    return send_response!(request, response);
-                }
-            }
+        let result = self.find_first_child_by_name(&name, &parent_id);
+
+        if let Some(result) = result {
+            let result = Self::create_file_metadata_from_entry(result);
+            let response = ProviderResponse::Lookup(Some(result));
+            return send_response!(request, response);
         }
+
         debug!("could not find file: {} in {}", name, parent_id);
         let response = ProviderResponse::Lookup(None);
         return send_response!(request, response);
     }
+
     //endregion
     //region read dir
     #[instrument(skip(request))]
@@ -544,6 +560,105 @@ impl DriveFileProvider {
         send_response!(request, ProviderResponse::ReadContent(data))
     }
     //endregion
+    //region rename
+
+    async fn rename(&mut self, request: ProviderRenameRequest) -> Result<()> {
+        let original_parent = self.get_correct_id(request.original_parent.clone());
+        let original_name = request.original_name.into_string();
+        if let Err(e) = original_name {
+            return send_error_response!(
+                request,
+                anyhow!("Could not convert original name into string: {:?}", e),
+                libc::EIO
+            );
+        }
+        let original_name = original_name.unwrap();
+        let new_parent = self.get_correct_id(request.new_parent.clone());
+        let new_name = request.new_name.into_string();
+        if let Err(e) = new_name {
+            return send_error_response!(
+                request,
+                anyhow!("Could not convert new name into string: {:?}", e),
+                libc::EIO
+            );
+        }
+        let new_name = new_name.unwrap();
+
+        let rename_result = self
+            .rename_inner(&original_parent, &original_name, &new_parent, &new_name)
+            .await;
+        if let Err((msg, code)) = rename_result {
+            return send_error_response!(request, anyhow!("{}", msg), code);
+        }
+
+        send_response!(request, ProviderResponse::Rename)
+    }
+
+    async fn rename_inner(
+        &mut self,
+        original_parent: &DriveId,
+        original_name: &String,
+        new_parent: &DriveId,
+        new_name: &String,
+    ) -> StdResult<(), (String, c_int)> {
+        let file_entry = self.find_first_child_by_name(&original_name, &original_parent);
+        if file_entry.is_none() {
+            return Err((format!("Could not find rename source"), libc::ENOENT));
+        }
+        let file_entry = file_entry.unwrap();
+
+        let file_id = file_entry.get_id();
+        if file_id.is_none() {
+            return Err((format!("Could not get id from entry"), libc::EINVAL));
+        }
+        let file_id = file_id.unwrap();
+
+        let wait_res = self
+            .wait_for_running_drive_request_if_exists(&file_id)
+            .await;
+        if let Err(e) = wait_res {
+            return Err((e.to_string(), libc::EIO));
+        }
+
+        if self.check_id_exists(&new_parent) {
+            return Err((format!("Folder does not exist"), libc::ENOENT));
+        }
+
+        if self.does_target_name_exist_under_parent(&new_parent, &new_name) {
+            return Err((format!("Target name is already used"), libc::EADDRINUSE));
+        }
+
+        let entry = self
+            .entries
+            .get_mut(&file_id)
+            .expect("We checked shortly before if the entry exists");
+
+        if original_name != new_name {
+            //check if the filename has been changed and update it in the metadata and on google drive
+            entry.changed_metadata.name = Some(new_name.clone());
+        }
+        let now = SystemTime::now();
+        entry.attr.atime = now;
+        entry.attr.mtime = now;
+        //check if the path is changed (child-parent relationships) and modify them accordingly
+        if original_parent != new_parent {
+            entry.changed_metadata.parents = Some(vec![new_parent.to_string()]);
+            self.remove_parent_child_relation(original_parent.clone(), file_id.clone());
+            self.add_parent_child_relation(new_parent.clone(), file_id.clone());
+        }
+
+        let upload_result = self.update_remote_metadata(file_id).await;
+        if let Err(e) = upload_result {
+            return Err((
+                format!("Error while uploading Metadata: {:?}", e),
+                libc::EREMOTEIO,
+            ));
+        }
+
+        Ok(())
+    }
+
+    //endregion
     //region write content
     #[instrument(skip(request))]
     async fn write_content(&mut self, request: ProviderWriteContentRequest) -> Result<()> {
@@ -566,6 +681,41 @@ impl DriveFileProvider {
 
     //endregion
     //region request helpers
+
+    fn does_target_name_exist_under_parent(
+        &self,
+        new_parent: &&DriveId,
+        new_name: &&String,
+    ) -> bool {
+        let new_file_entry = self.find_first_child_by_name(&new_name, &new_parent);
+        return new_file_entry.is_some();
+    }
+    fn check_id_exists(&self, id: &DriveId) -> bool {
+        self.entries.contains_key(id)
+    }
+
+    /// returns the first entry it finds with the specified name that is a child of the parent_id
+    ///
+    /// returns ```Option::None``` if none match/the parent does not have any children  
+    fn find_first_child_by_name(&self, name: &String, parent_id: &DriveId) -> Option<&FileData> {
+        let mut result = None;
+        let children = self.children.get(&parent_id);
+        for child in children.unwrap_or(&vec![]) {
+            if let Some(child) = self.entries.get(child) {
+                if child
+                    .metadata
+                    .name
+                    .as_ref()
+                    .unwrap_or(&"$'\\NO_NAME".to_string())
+                    .eq_ignore_ascii_case(&name)
+                {
+                    result = Some(child);
+                    break;
+                }
+            }
+        }
+        result
+    }
 
     /// gets the file-handle and opens the file if it is marked for open.
     ///
@@ -717,6 +867,20 @@ impl DriveFileProvider {
         changes
     }
 
+    async fn update_remote_metadata(&self, id: DriveId) -> Result<()> {
+        let file_data = self.entries.get(&id);
+        if file_data.is_none() {
+            return Err(anyhow!("Could not get entry with id: {}", id));
+        }
+        let file_data = file_data.unwrap();
+        let mut metadata = file_data.changed_metadata.clone();
+        Self::prepare_changed_metadata_for_upload(&id, &mut metadata);
+        self.drive
+            .update_file_metadata_on_drive(metadata, &file_data.metadata);
+
+        Ok(())
+    }
+
     /// starts a download of the specified file and puts it in the running_requests map
     ///
     /// - will return an Error if another request is already running for the same id, so all callers should make sure of that
@@ -758,7 +922,10 @@ impl DriveFileProvider {
             .entries
             .get(&id)
             .context("could not find data for id")?;
+
         let mut metadata = file_data.changed_metadata.clone();
+        Self::prepare_changed_metadata_for_upload(&id, &mut metadata);
+        metadata.mime_type = file_data.metadata.mime_type.clone();
 
         let target_path = self.construct_path(&id)?;
         debug!(
@@ -766,9 +933,6 @@ impl DriveFileProvider {
             target_path.display(),
             metadata
         );
-        metadata.id = Some(id.clone().into());
-        metadata.mime_type = file_data.metadata.mime_type.clone();
-        let metadata = remove_volatile_metadata(metadata);
         let handle: JoinHandle<Result<()>> = tokio::spawn(async move {
             //TODO1: only send the changed metadata over (+id), not all of it (currently only all data that could change and where changes should be written to the drive), since google drive only wants the changes
             drive
@@ -778,6 +942,11 @@ impl DriveFileProvider {
         });
         self.running_requests.insert(id, handle);
         Ok(())
+    }
+
+    fn prepare_changed_metadata_for_upload(id: &DriveId, mut metadata: &mut DriveFileMetadata) {
+        metadata.id = Some(id.clone().into());
+        remove_volatile_metadata(&mut metadata);
     }
 
     /// Checks if a drive request for this ID is running and if there is, waits for it.
@@ -834,45 +1003,52 @@ impl DriveFileProvider {
             .expect("adding the root entry has to work, otherwise nothing else works");
         let entries = self.drive.list_all_files().await?;
         for entry in entries {
-            let id = &entry.id;
-            if let Some(id) = id {
-                let id = DriveId::from(id);
-                let attr = self.create_file_attr_from_metadata(&entry);
-                if attr.is_err() {
-                    warn!(
-                        "error while creating FileAttr from metadata: {:?} entry: {:?}",
-                        attr, entry
-                    );
-                    continue;
-                }
-                let attr = attr.unwrap();
-                if let Some(parents) = &entry.parents {
-                    for parent in parents {
-                        let parent_id = DriveId::from(parent);
-                        self.add_parent_child_relation(parent_id, id.clone());
-                    }
-                } else {
-                    //file is at root level
-                    self.add_parent_child_relation(
-                        self.get_correct_id(DriveId::root()),
-                        id.clone(),
-                    );
-                }
-                let entry_data = FileData {
-                    metadata: entry,
-                    changed_metadata: Default::default(),
-                    perma: false, //TODO: read the perma marker from somewhere (maybe only after all files have been checked?)
-                    attr,
-                    is_local: false,
-                };
-                self.entries.insert(id, entry_data);
-            }
+            self.add_drive_entry_to_entries(entry);
         }
         // for (i, (id, data)) in self.entries.iter().enumerate() {
         //     info!("entry {:3} id: {:>40} data: {:?}", i, id, data);
         // }
         Ok(())
     }
+
+    fn add_drive_entry_to_entries(&mut self, entry: DriveFileMetadata) -> bool {
+        let id = &entry.id;
+        if let Some(id) = id {
+            let id = DriveId::from(id);
+            let attr = self.create_file_attr_from_metadata(&entry);
+            if attr.is_err() {
+                warn!(
+                    "error while creating FileAttr from metadata: {:?} entry: {:?}",
+                    attr, entry
+                );
+                return true;
+            }
+            let attr = attr.unwrap();
+            self.add_child_parent_relations(&entry, &id);
+            let entry_data = FileData {
+                metadata: entry,
+                changed_metadata: Default::default(),
+                perma: false, //TODO: read the perma marker from somewhere (maybe only after all files have been checked?)
+                attr,
+                is_local: false,
+            };
+            self.entries.insert(id, entry_data);
+        }
+        false
+    }
+
+    fn add_child_parent_relations(&mut self, entry: &DriveFileMetadata, id: &DriveId) {
+        if let Some(parents) = &entry.parents {
+            for parent in parents {
+                let parent_id = DriveId::from(parent);
+                self.add_parent_child_relation(parent_id, id.clone());
+            }
+        } else {
+            //file is at root level
+            self.add_parent_child_relation(self.get_correct_id(DriveId::root()), id.clone());
+        }
+    }
+
     fn create_file_attr_from_metadata(&self, metadata: &DriveFileMetadata) -> Result<FileAttr> {
         let kind = convert_mime_type_to_file_type(
             metadata.mime_type.as_ref().unwrap_or(&"NONE".to_string()),
@@ -930,8 +1106,11 @@ impl DriveFileProvider {
         self.entries.insert(root_id, data);
         Ok(())
     }
+
+    /// changes alias ids like ```DriveId::root()``` into their actual IDs on the drive
     fn get_correct_id(&self, id: DriveId) -> DriveId {
         if id == DriveId::root() {
+            trace!("aliasing DriveId::root() to actual root: {}", id);
             return self.alt_root_id.clone();
         }
         return id;
@@ -959,6 +1138,53 @@ impl DriveFileProvider {
             return Ok(());
         } else {
             todo!("there was a file/dir added on the remote since this ID is unknown")
+        }
+    }
+
+    #[instrument(skip(self, file_change))]
+    fn process_remote_file_moved(&mut self, id: &DriveId, file_change: &DriveFileMetadata) {
+        if let Some(changed_parents) = &file_change.parents {
+            trace!("parent was changed! {:?}", id);
+            let entry = self.entries.get(&id);
+            if let Some(entry) = entry {
+                trace!(
+                    "changed_parents: {:?} before change: {:?}",
+                    changed_parents,
+                    entry.metadata.parents
+                );
+                if Some(changed_parents) != entry.metadata.parents.as_ref() {
+                    if let Some(existing_parents) = entry.metadata.parents.clone() {
+                        for e in existing_parents {
+                            let old_parent_id = self.get_correct_id(DriveId::from(&e));
+                            trace!("(1) converted id from {} to {}", e, old_parent_id);
+                            self.remove_parent_child_relation(old_parent_id, id.clone());
+                        }
+                    }
+                    trace!("done removing old parents");
+                    for new_parent in changed_parents {
+                        let new_parent_id = self.get_correct_id(DriveId::from(new_parent));
+                        trace!("(2) converted id from {} to {} ", new_parent, new_parent_id);
+                        self.add_parent_child_relation(new_parent_id, id.clone());
+                    }
+                    trace!("done adding new parents");
+                    let entry_m = self.entries.get_mut(id);
+                    if let Some(entry_m) = entry_m {
+                        entry_m.metadata.parents = file_change.parents.clone();
+                    }
+                    trace!("done modifying metadata");
+                } else {
+                    trace!(
+                        "before and after are equal: {:?} == {:?}",
+                        Some(changed_parents),
+                        entry.metadata.parents
+                    );
+                }
+            } else {
+                warn!(
+                    "A remote file was moved but is unknown locally. is this right?: {:?}",
+                    id
+                );
+            }
         }
     }
 }
@@ -996,8 +1222,7 @@ fn process_file_change(entry: &mut FileData, change: DriveFileMetadata) -> Resul
     Ok(())
 }
 
-fn remove_volatile_metadata(metadata: DriveFileMetadata) -> DriveFileMetadata {
-    let mut metadata = metadata;
+fn remove_volatile_metadata(metadata: &mut DriveFileMetadata) {
     metadata.size = None;
     metadata.created_time = None;
     metadata.trashed_time = None;
@@ -1008,11 +1233,9 @@ fn remove_volatile_metadata(metadata: DriveFileMetadata) -> DriveFileMetadata {
     metadata.viewed_by_me_time = None;
     metadata.explicitly_trashed = None;
     metadata.md5_checksum = None;
-    metadata.parents = None;
+    // metadata.parents = None;
     // parents have to be set differently: "The parents field is not directly writable in update requests. Use the addParents and removeParents parameters instead."
     metadata.kind = None;
-
-    metadata
 }
 
 fn convert_mime_type_to_file_type(mime_type: &str) -> Result<FileType> {
