@@ -145,6 +145,18 @@ impl GoogleDrive {
 }
 
 impl GoogleDrive {
+    #[instrument(skip(original_file), fields(file_name = original_file.name, file_id = original_file.drive_id))]
+    pub async fn update_file_metadata_on_drive(
+        &self,
+        changed_data: File,
+        original_file: &File,
+    ) -> Result<()> {
+        update_file_metadata_on_drive(&self, changed_data, original_file).await?;
+        Ok(())
+    }
+}
+
+impl GoogleDrive {
     #[instrument]
     pub async fn download_file(&self, file_id: DriveId, target_file: &PathBuf) -> Result<File> {
         debug!(
@@ -458,6 +470,66 @@ pub async fn create_file_on_drive(
     debug!("create_file(): response: {:?}", response);
     debug!("create_file(): file: {:?}", file);
     Ok(file)
+}
+
+pub async fn update_file_metadata_on_drive(
+    drive: &GoogleDrive,
+    mut changed_data: File,
+    original_file: &File,
+) -> Result<()> {
+    debug!("updating remote metadata with: {:?}", changed_data);
+    //region extract id
+    let id = changed_data.id;
+    if id.is_none() {
+        return Err(anyhow!("FileId not set"));
+    }
+    let id = id.unwrap();
+    changed_data.id = None;
+    //endregion
+
+    //region extract parents
+    let mut parents = vec![];
+    let has_parent_change;
+    if let Some(mut changed_parents) = changed_data.parents {
+        has_parent_change = changed_parents.len() > 0;
+        parents.append(&mut changed_parents);
+    } else {
+        has_parent_change = false;
+    }
+
+    changed_data.parents = None;
+    //endregion
+    trace!("starting upload of metadata: {:?}", changed_data);
+    let mut call = drive.hub.files().update(changed_data, id.as_str());
+
+    if has_parent_change {
+        //remove old parents
+        original_file.parents.map(|x| call.remove_parents(x));
+        //add new parents
+        for new_parent in parents {
+            call.add_parents(new_parent.as_str());
+        }
+    }
+
+    let (response, returned_file) = call
+        .doit_without_upload()
+        .await
+        .context("Error while sending metadata update request")?;
+
+    trace!(
+        "received response from metadata upload {:?} with the returned file: {:?}",
+        response,
+        returned_file
+    );
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "Received non success status code: {}: {:?}",
+            response.status(),
+            response
+        ));
+    }
+
+    Ok(())
 }
 
 #[instrument(skip(file), fields(drive_id = file.drive_id))]
