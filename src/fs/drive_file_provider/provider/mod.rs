@@ -249,7 +249,7 @@ impl DriveFileProvider {
         let changes = self.get_changes().await;
         if let Ok(changes) = changes {
             for change in changes {
-                let change_applied_successful = self.process_change(change);
+                let change_applied_successful = self.process_change(change).await;
                 if let Err(e) = change_applied_successful {
                     error!("got an error while applying change: {:?}", e);
                 }
@@ -1115,30 +1115,37 @@ impl DriveFileProvider {
         }
         return id;
     }
-    fn process_change(&mut self, change: Change) -> Result<()> {
+
+    async fn process_change(&mut self, change: Change) -> Result<()> {
         let id = change.id;
         let id = self.get_correct_id(id);
+        match change.kind {
+            ChangeType::Drive(drive) => {
+                error!("drive changes are not supported yet: {:?}", drive);
+                // todo!("drive changes are not supported yet: {:?}", drive);
+            }
+            ChangeType::File(file_change) => {
+                //TODO: check if local has changes that conflict (content)
+                //TODO: check if the content was changed (checksum) and schedule
+                // a download if it is a local/perm file or mark it for download on next open
+                trace!("file change: {:?}", file_change);
 
-        let entry = self.entries.get_mut(&id);
-        if let Some(entry) = entry {
-            match change.kind {
-                ChangeType::Drive(drive) => {
-                    todo!("drive changes are not supported yet: {:?}", drive);
-                }
-                ChangeType::File(file_change) => {
-                    //TODO: check if local has changes that conflict (content)
-                    //TODO: check if the content was changed (checksum) and schedule
-                    // a download if it is a local/perm file or mark it for download on next open
+                self.process_remote_file_moved(&id, &file_change);
+                let entry = self.entries.get_mut(&id);
+                if let Some(entry) = entry {
                     process_file_change(entry, file_change)?;
-                }
-                ChangeType::Removed => {
-                    todo!("remove local file/dir since it was deleted on the remote");
+                } else {
+                    let entry = self.drive.get_metadata_for_file(id).await?;
+                    self.add_drive_entry_to_entries(entry);
+                    // todo!("there was a file/dir added on the remote since this ID is unknown")
+                    //TODO1: check if this is working
                 }
             }
-            return Ok(());
-        } else {
-            todo!("there was a file/dir added on the remote since this ID is unknown")
+            ChangeType::Removed => {
+                todo!("remove local file/dir since it was deleted on the remote");
+            }
         }
+        Ok(())
     }
 
     #[instrument(skip(self, file_change))]
